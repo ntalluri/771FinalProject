@@ -83,6 +83,19 @@ class HDF5IterableDataset(IterableDataset):
             if data_processed is not None and data_processed.shape[:2] == (MAX_ROWS, REQUIRED_COLUMNS):
                 yield torch.tensor(data_processed, dtype=torch.float32)
 
+
+def generate_row_mask(batch_size, num_rows, mask_ratio=0.15):
+    # Generate random masks for each sample in the batch
+    row_mask = torch.zeros((batch_size, num_rows), dtype=torch.bool)
+    for i in range(batch_size):
+        num_masked = int(num_rows * mask_ratio)
+        mask_indices = np.random.choice(num_rows, num_masked, replace=False)
+        row_mask[i, mask_indices] = True
+    return row_mask
+
+
+## for testing purposes
+# # Dataset and DataLoader
 # file_dir = f"data/Toy_dataset"
 
 # # creates an instance of the custom dataset class HDF5IterableDataset, initialized with the directory path file_dir.
@@ -90,7 +103,14 @@ class HDF5IterableDataset(IterableDataset):
 # # only one batch of data is loaded into memory at a time, which helps manage resources when handling extensive data
 # data_loader = DataLoader(dataset, batch_size=16, num_workers=0)
 
-# for data in data_loader:
-#     # printing out the batches in the dataloader
-#     print(data.shape)
-#     print(data.unsqueeze(1).shape)
+# for batch_idx, batch_data in enumerate(data_loader):
+#     batch_size, num_rows, num_columns = batch_data.shape
+    
+#     # Generate separate masks for each sample in the batch
+#     row_masks = generate_row_mask(batch_size, num_rows, mask_ratio=0.15)
+    
+#     print(f"Batch {batch_idx}")
+#     print(f"Batch data shape: {batch_data.shape}")
+#     print(f"Row masks shape: {row_masks.shape}")
+#     print(f"Row masks: \n{row_masks}")
+#     break  # Only process one batch for demonstration
