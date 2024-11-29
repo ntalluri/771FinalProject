@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
-from dataloader import HDF5IterableDataset, generate_row_mask
-from torch.utils.data import DataLoader
+
 
 class MAEModel(nn.Module):
     def __init__(self, input_dim, embed_dim, num_heads, depth, mask_token_value=0.0):
@@ -11,16 +10,24 @@ class MAEModel(nn.Module):
 
         # embedding layer
         self.embedding = nn.Linear(input_dim, embed_dim)
-        
-        # transformer encoder
-        self.encoder = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(embed_dim, num_heads), num_layers=depth
+
+        # Transformer encoder for unmasked rows
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=embed_dim,
+            nhead=num_heads,
+            dim_feedforward=4 * embed_dim,
+            batch_first=True
         )
-        
-        # transformer decoder
-        self.decoder = nn.TransformerDecoder(
-            nn.TransformerDecoderLayer(embed_dim, num_heads), num_layers=depth
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=depth)
+
+        # Transformer decoder with placeholders for masked rows
+        decoder_layer = nn.TransformerDecoderLayer(
+            d_model=embed_dim,
+            nhead=num_heads,
+            dim_feedforward=4 * embed_dim,
+            batch_first=True
         )
+        self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=depth)
 
         # reconstruction head
         self.reconstruction_head = nn.Linear(embed_dim, input_dim)
@@ -35,15 +42,20 @@ class MAEModel(nn.Module):
             torch.Tensor: Reconstructed data of shape [batch_size, MAX_ROWS, REQUIRED_COLUMNS].
         """
         batch_size, num_rows, num_cols = x.size()
-      
-        row_mask = row_mask.unsqueeze(-1).expand(batch_size, num_rows, num_cols)  # shape: [batch_size, MAX_ROWS, REQUIRED_COLUMNS]
-        x[row_mask] = self.mask_token_value
 
-        x = self.embedding(x)
+        # Mask rows as per report (25-50% of rows)
+        row_mask = row_mask.unsqueeze(-1).expand(-1, -1, num_cols)
+        x_masked = x.clone()
+        x_masked[row_mask] = self.mask_token_value
 
-        encoded = self.encoder(x)
+        # Embed and encode
+        embedded = self.embedding(x_masked)
+        encoded = self.encoder(embedded)
+
+        # Decode with masked tokens
         decoded = self.decoder(encoded, encoded)
+
+        # Reconstruct full matrix
         reconstructed = self.reconstruction_head(decoded)
 
         return reconstructed
-
