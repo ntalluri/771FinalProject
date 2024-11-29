@@ -80,11 +80,11 @@ class HDF5IterableDataset(IterableDataset):
             data_detrend = signal.detrend(raw_data_np, type='linear')
             sos = signal.butter(5, [20, 100], 'bandpass', fs=fs, output='sos')
             data_filtered = signal.sosfilt(sos, data_detrend)
-            
-            # apply padding strategy
-            data_padded = custom_padding(data_filtered, MAX_ROWS, strategy=self.padding_strategy)
 
-            # add positional encoding
+            # Normalize the filtered data
+            data_normalized = (data_filtered - np.mean(data_filtered)) / (np.std(data_filtered) + 1e-8)
+
+            data_padded = custom_padding(data_normalized, MAX_ROWS, strategy=self.padding_strategy)
             data_with_pos_encoding = add_positional_encoding(data_padded)
             return data_with_pos_encoding
 
