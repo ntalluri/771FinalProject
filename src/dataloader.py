@@ -1,5 +1,5 @@
 import torch
-from torch.utils.data import IterableDataset, DataLoader
+from torch.utils.data import IterableDataset
 import h5py
 import numpy as np
 from scipy import signal
@@ -9,18 +9,26 @@ MIN_ROWS = 1357
 MAX_ROWS = 1387
 REQUIRED_COLUMNS = 30000
 
+
+def generate_row_mask(batch_size, num_rows, mask_ratio=0.25):
+    row_mask = torch.zeros((batch_size, num_rows), dtype=torch.bool)
+    for i in range(batch_size):
+        num_masked = int(num_rows * mask_ratio)
+        mask_indices = torch.randperm(num_rows)[:num_masked]
+        row_mask[i, mask_indices] = True
+    return row_mask
+
+
 def add_positional_encoding(data):
-    #TODO currently adds the PE to the data
-    # want to try concatting the PE to the data
-    
     rows, cols = data.shape
+    position = np.arange(rows)[:, np.newaxis]
+    div_term = np.exp(np.arange(0, cols, 2) * -(np.log(10000.0) / cols))
 
-    row_encoding = np.sin(np.arange(rows)[:, np.newaxis] / 10000) + np.cos(np.arange(rows)[:, np.newaxis] / 10000)
-    col_encoding = np.sin(np.arange(cols)[np.newaxis, :] / 10000) + np.cos(np.arange(cols)[np.newaxis, :] / 10000)
+    row_encoding = np.zeros((rows, cols))
+    row_encoding[:, 0::2] = np.sin(position * div_term)
+    row_encoding[:, 1::2] = np.cos(position * div_term)
 
-    # adding not concatting the PE
-    data = data + row_encoding[:rows, :] + col_encoding[:, :cols]
-    return data
+    return data + row_encoding
 
 
 def custom_padding(data, target_rows, strategy='zero'):
@@ -53,11 +61,14 @@ class HDF5IterableDataset(IterableDataset):
         self.file_paths = [os.path.join(file_dir, f) for f in os.listdir(file_dir) if f.endswith('.h5')]
         self.padding_strategy = padding_strategy
 
+    def __len__(self):
+        return len(self.file_paths)
+
     def process_file(self, file_path):
         with h5py.File(file_path, 'r') as file:
             fs = file['Acquisition/Raw[0]'].attrs["OutputDataRate"]
             raw_data_np = file['Acquisition/Raw[0]/RawData'][:]
-            
+
             rows, cols = raw_data_np.shape
             # skip files with incorrect dimensions
             # the DataLoader will continue iterating through the generator until it gets enough samples to fill the batch size even if a "bad" image is in the data
@@ -80,20 +91,6 @@ class HDF5IterableDataset(IterableDataset):
     def __iter__(self):
         for file_path in self.file_paths:
             data_processed = self.process_file(file_path)
-            if data_processed is not None and data_processed.shape[:2] == (MAX_ROWS, REQUIRED_COLUMNS):
-                yield torch.tensor(data_processed, dtype=torch.float32)
-
-
-def generate_row_mask(batch_size, num_rows, mask_ratio=0.15):
-    # Generate random masks for each sample in the batch
-    row_mask = torch.zeros((batch_size, num_rows), dtype=torch.bool)
-    for i in range(batch_size):
-        num_masked = int(num_rows * mask_ratio)
-        mask_indices = np.random.choice(num_rows, num_masked, replace=False)
-        row_mask[i, mask_indices] = True
-    return row_mask
-
-
 ## for testing purposes
 # # Dataset and DataLoader
 # file_dir = f"data/Toy_dataset"
@@ -114,3 +111,5 @@ def generate_row_mask(batch_size, num_rows, mask_ratio=0.15):
 #     print(f"Row masks shape: {row_masks.shape}")
 #     print(f"Row masks: \n{row_masks}")
 #     break  # Only process one batch for demonstration
+            if data_processed is not None:
+                yield torch.tensor(data_processed, dtype=torch.float32)
