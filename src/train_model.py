@@ -7,7 +7,7 @@ from MAE import MAEModel
 import torch.nn as nn
 
 file_dir = "../data/Toy_dataset"
-batch_size = 4 # I run out of memory with higher
+batch_size = 4 # I run out of memory with higher, but it probably should be higher
 MAX_ROWS = 1387
 REQUIRED_COLUMNS = 30000
 num_epochs = 2
@@ -117,3 +117,7 @@ with torch.no_grad():
 
 test_loss /= max(test_batches, 1)
 print(f"Final Test Loss: {test_loss:.4f}")
+
+model_save_path = "trained_mae_model.pt"
+torch.save(model, model_save_path)
+print(f"Model saved to {model_save_path}")
