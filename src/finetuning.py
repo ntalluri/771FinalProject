@@ -7,70 +7,35 @@ from MAE import MAEModel
 import torch.nn as nn
 import random 
 
-def gather_all_file_paths(root_dirs):
-    """
-    Gather all HDF5 file paths from the immediate subdirectories of the given root directories.
-
-    Args:
-        root_dirs (list or str): List of root directories or a single root directory
-
-    Returns:
-        list: List of file paths
-    """
-    if isinstance(root_dirs, str):
-        root_dirs = [root_dirs]
-    file_paths = []
-    for root_dir in root_dirs:
-        # List immediate subdirectories in the root directory
-        try:
-            subdirs = [
-                d for d in os.listdir(root_dir)
-                if os.path.isdir(os.path.join(root_dir, d))
-            ]
-        except FileNotFoundError:
-            print(f"Root directory not found: {root_dir}")
-            continue
-
-        for subdir in subdirs:
-            subdir_path = os.path.join(root_dir, subdir)
-            # List files ending with '.h5' in the current subdirectory (non-recursive)
-            try:
-                files_in_subdir = os.listdir(subdir_path)
-            except FileNotFoundError:
-                print(f"Subdirectory not found: {subdir_path}")
-                continue
-
-            h5_files = [
-                os.path.join(subdir_path, f)
-                for f in files_in_subdir
-                if os.path.isfile(os.path.join(subdir_path, f)) and f.endswith('.h5')
-            ]
-            file_paths.extend(h5_files)
-    return file_paths
-
 # tunable parameters
 # TODO: update this to do a paramter sweep 
-batch = 4
-num_epochs = 2
-learning_rate = 1e-4
-mask_ratio = 0.25
-padding = 'zero'
-positional_encodings = 'add'
-embedding_dim = 512
-number_heads = 8
-layers = 6
+# batch = 4
+# num_epochs = 2
+# learning_rate = 1e-4
+# mask_ratio = 0.25
+# padding = 'zero'
+# positional_encodings = 'add'
+# embedding_dim = 512
+# number_heads = 8
+# layers = 6
+
+# Tunable parameters and their ranges
+param_grid = {
+    'batch_size': [4, 8],
+    'num_epochs': [2],
+    'learning_rate': [1e-4, 1e-3],
+    'mask_ratio': [0.25, 0.5],
+    'padding': ['zero', 'repeat', 'noise', 'mirror'],
+    'positional_encodings': ['add', 'concat'],
+    'embedding_dim': [256, 512],
+    'number_heads': [4, 8],
+    'layers': [4, 6]
+}
 
 # not tunable parameters 
 MAX_ROWS = 1387
 REQUIRED_COLUMNS = 30000
-model = MAEModel(
-    input_dim=REQUIRED_COLUMNS,
-    embed_dim=embedding_dim,
-    num_heads=number_heads,
-    depth=layers
-)
-criterion = nn.MSELoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+
 
 # List of folder paths
 folder_paths = [
@@ -204,93 +169,136 @@ val_end = train_end + int(val_ratio * total_files)
 train_file_paths = all_file_paths[:train_end]
 val_file_paths = all_file_paths[train_end:val_end]
 test_file_paths = all_file_paths[val_end:]
-print(f"Total files: {total_files}")
-print(f"Training files: {len(train_file_paths)}")
-print(f"Validation files: {len(val_file_paths)}")
-print(f"Testing files: {len(test_file_paths)}")
 
 # Create datasets
-train_dataset = HDF5IterableDataset(train_file_paths, padding_strategy = padding, pos_encoding_method=positional_encodings)
-val_dataset = HDF5IterableDataset(val_file_paths, padding_strategy = padding, pos_encoding_method=positional_encodings)
-test_dataset = HDF5IterableDataset(test_file_paths, padding_strategy = padding, pos_encoding_method=positional_encodings)
- 
-# Create data loaders
-train_loader = DataLoader(train_dataset, batch_size=batch)
-val_loader = DataLoader(val_dataset, batch_size=batch)
-test_loader = DataLoader(test_dataset, batch_size=batch)
+def create_datasets(padding_strategy, pos_encoding_method):
+    train_dataset = HDF5IterableDataset(train_file_paths, padding_strategy=padding_strategy, pos_encoding_method=pos_encoding_method)
+    val_dataset = HDF5IterableDataset(val_file_paths, padding_strategy=padding_strategy, pos_encoding_method=pos_encoding_method)
+    test_dataset = HDF5IterableDataset(test_file_paths, padding_strategy=padding_strategy, pos_encoding_method=pos_encoding_method)
+    return train_dataset, val_dataset, test_dataset
 
-for epoch in range(num_epochs):
-    print(f"Epoch {epoch + 1}")
+# Training and evaluation function
+def train_and_evaluate(params):
+    # Unpack parameters
+    batch_size = params['batch_size']
+    num_epochs = params['num_epochs']
+    learning_rate = params['learning_rate']
+    mask_ratio = params['mask_ratio']
+    padding = params['padding']
+    positional_encodings = params['positional_encodings']
+    embedding_dim = params['embedding_dim']
+    number_heads = params['number_heads']
+    layers = params['layers']
     
-    # training
-    model.train()
-    train_loss = 0.0
-    num_batches = 0
+    print(f"Training with parameters: {params}")
+    
+    # Create datasets and loaders
+    train_dataset, val_dataset, test_dataset = create_datasets(padding, positional_encodings)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size)
+    
+    # Initialize model, criterion, optimizer
+    model = MAEModel(
+        input_dim=REQUIRED_COLUMNS,
+        embed_dim=embedding_dim,
+        num_heads=number_heads,
+        depth=layers
+    )
+    criterion = nn.MSELoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    
+    # Training loop
+    for epoch in range(num_epochs):
+        model.train()
+        train_loss = 0.0
+        num_batches = 0
 
-    for batch_idx, batch_data in enumerate(train_loader):
-        optimizer.zero_grad()
-        
-        # generate row masks for the batch
-        row_mask = generate_row_mask(batch_data.size(0), MAX_ROWS, mask_ratio).to(batch_data.device)
-        reconstructed = model(batch_data, row_mask)
-        
-        # compute loss
-        loss = criterion(
-            reconstructed[row_mask.unsqueeze(-1).expand_as(reconstructed)],
-            batch_data[row_mask.unsqueeze(-1).expand_as(batch_data)]
-        )
-
-        loss.backward()
-        optimizer.step()
-        train_loss += loss.item()
-        num_batches += 1
-
-        if batch_idx % 10 == 0:
-            print(f"  Batch {batch_idx}, Loss: {loss.item():.4f}")
-
-    train_loss /= max(num_batches, 1)
-    print(f"Epoch {epoch + 1} Training Loss: {train_loss:.4f}")
-
-    model.eval()
-    val_loss = 0.0
-    val_batches = 0
-    with torch.no_grad():
-        for batch_data in val_loader:
+        for batch_idx, batch_data in enumerate(train_loader):
+            optimizer.zero_grad()
             row_mask = generate_row_mask(batch_data.size(0), MAX_ROWS, mask_ratio).to(batch_data.device)
             reconstructed = model(batch_data, row_mask)
-            
-            # compute loss
             loss = criterion(
                 reconstructed[row_mask.unsqueeze(-1).expand_as(reconstructed)],
                 batch_data[row_mask.unsqueeze(-1).expand_as(batch_data)]
             )
-            val_loss += loss.item()
-            val_batches += 1
+            loss.backward()
+            optimizer.step()
+            train_loss += loss.item()
+            num_batches += 1
 
-    val_loss /= max(val_batches, 1)
-    print(f"Epoch {epoch + 1} Validation Loss: {val_loss:.4f}")
+        train_loss /= max(num_batches, 1)
 
-model.eval()
-test_loss = 0.0
-test_batches = 0
-with torch.no_grad():
-        # generate row masks for the batch
-        # forward pass
-    for batch_data in test_loader:
-        row_mask = generate_row_mask(batch_data.size(0), MAX_ROWS, mask_ratio).to(batch_data.device)
-        reconstructed = model(batch_data, row_mask)
-        
-        # compute loss
-        loss = criterion(
-            reconstructed[row_mask.unsqueeze(-1).expand_as(reconstructed)],
-            batch_data[row_mask.unsqueeze(-1).expand_as(batch_data)]
-        )
-        test_loss += loss.item()
-        test_batches += 1
+        # Validation loop
+        model.eval()
+        val_loss = 0.0
+        val_batches = 0
+        with torch.no_grad():
+            for batch_data in val_loader:
+                row_mask = generate_row_mask(batch_data.size(0), MAX_ROWS, mask_ratio).to(batch_data.device)
+                reconstructed = model(batch_data, row_mask)
+                loss = criterion(
+                    reconstructed[row_mask.unsqueeze(-1).expand_as(reconstructed)],
+                    batch_data[row_mask.unsqueeze(-1).expand_as(batch_data)]
+                )
+                val_loss += loss.item()
+                val_batches += 1
 
-test_loss /= max(test_batches, 1)
-print(f"Final Test Loss: {test_loss:.4f}")
+        val_loss /= max(val_batches, 1)
+        print(f"Epoch {epoch + 1}, Training Loss: {train_loss:.4f}, Validation Loss: {val_loss:.4f}")
+    
+    # Testing loop
+    model.eval()
+    test_loss = 0.0
+    test_batches = 0
+    with torch.no_grad():
+        for batch_data in test_loader:
+            row_mask = generate_row_mask(batch_data.size(0), MAX_ROWS, mask_ratio).to(batch_data.device)
+            reconstructed = model(batch_data, row_mask)
+            loss = criterion(
+                reconstructed[row_mask.unsqueeze(-1).expand_as(reconstructed)],
+                batch_data[row_mask.unsqueeze(-1).expand_as(batch_data)]
+            )
+            test_loss += loss.item()
+            test_batches += 1
 
-model_save_path = "trained_mae_model.pt"
-torch.save(model, model_save_path)
-print(f"Model saved to {model_save_path}")
+    test_loss /= max(test_batches, 1)
+    print(f"Test Loss: {test_loss:.4f}")
+    
+    return val_loss, test_loss, copy.deepcopy(model)
+
+# Parameter combinations
+param_combinations = list(itertools.product(*param_grid.values()))
+param_names = list(param_grid.keys())
+
+# Store results
+results = []
+best_val_loss = float('inf')
+best_model = None
+best_params = None
+
+# Loop over all parameter combinations
+for param_values in param_combinations:
+    params = dict(zip(param_names, param_values))
+    val_loss, test_loss, model = train_and_evaluate(params)
+    results.append({
+        **params,
+        'val_loss': val_loss,
+        'test_loss': test_loss
+    })
+    
+    # Save the best model
+    if val_loss < best_val_loss:
+        best_val_loss = val_loss
+        best_model = model
+        best_params = params
+
+# Save the best model
+model_save_path = "best_trained_mae_model.pt"
+torch.save(best_model.state_dict(), model_save_path)
+print(f"Best model saved to {model_save_path} with parameters {best_params}")
+
+# Save results to a CSV file
+results_df = pd.DataFrame(results)
+results_df.to_csv('parameter_tuning_results.csv', index=False)
+print("Results saved to parameter_tuning_results.csv")
