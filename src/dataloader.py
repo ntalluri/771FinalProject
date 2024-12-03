@@ -165,12 +165,6 @@ class HDF5IterableDataset(IterableDataset):
         self.padding_strategy = padding_strategy
         self.pos_encoding_method = pos_encoding_method
 
-        # Debug print to check for "success.log" and "error.log" in file_paths
-        has_unwanted_logs = any(
-            os.path.basename(fp) in ["success.log", "error.log"] for fp in self.file_paths
-        )
-        print(not has_unwanted_logs)  # Prints False if unwanted logs are found
-
     def __len__(self):
         return len(self.file_paths)
 
@@ -192,7 +186,6 @@ class HDF5IterableDataset(IterableDataset):
         Returns:
             torch.Tensor: Processed data tensor, or None if file is invalid
         """
-        print("here")
         with h5py.File(file_path, 'r') as file:
             fs = file['Acquisition/Raw[0]'].attrs["OutputDataRate"]
             raw_data_np = file['Acquisition/Raw[0]/RawData'][:]

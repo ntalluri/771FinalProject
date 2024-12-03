@@ -14,6 +14,8 @@ num_epochs = 2
 mask_ratio = 0.25 # from our midterm doc
 train_ratio = 0.7
 val_ratio = 0.15  # the test ratio will be 1 - (train_ratio + val_ratio)
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+criterion = nn.MSELoss()
 
 # get all file paths
 all_file_paths = [os.path.join(file_dir, f) for f in os.listdir(file_dir) if f.endswith('.h5')]
@@ -41,8 +43,6 @@ model = MAEModel(
     depth=6
 )
 
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
-criterion = nn.MSELoss()
 
 for epoch in range(num_epochs):
     print(f"Epoch {epoch + 1}")
