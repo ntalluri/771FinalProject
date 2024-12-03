@@ -7,11 +7,9 @@ from MAE import MAEModel
 import torch.nn as nn
 
 root_dirs = ["/media/jesse/sda/Organized_SURF", "/media/jesse/sdb/Organized_SURF"]
-exclude_dirs = ['Log'] 
 
 dataset = HDF5IterableDataset(
     root_dirs=root_dirs,
-    exclude_dirs=exclude_dirs,
     padding_strategy='zero',
     pos_encoding_method='add'
 )
