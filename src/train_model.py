@@ -6,7 +6,7 @@ from dataloader import HDF5IterableDataset, generate_row_mask
 from MAE import MAEModel
 import torch.nn as nn
 
-root_dirs = ['/path/to/root_directory1', '/path/to/root_directory2']
+root_dirs = ["/media/jesse/sda/Organized_SURF", "/media/jesse/sdb/Organized_SURF"]
 exclude_dirs = ['Log'] 
 
 dataset = HDF5IterableDataset(
