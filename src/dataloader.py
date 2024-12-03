@@ -169,6 +169,12 @@ class HDF5IterableDataset(IterableDataset):
         self.padding_strategy = padding_strategy
         self.pos_encoding_method = pos_encoding_method
 
+        # Debug print to check for "success.log" and "error.log" in file_paths
+        has_unwanted_logs = any(
+            os.path.basename(fp) in ["success.log", "error.log"] for fp in self.file_paths
+        )
+        print(not has_unwanted_logs)  # Prints False if unwanted logs are found
+
     def _gather_files(self):
         """
         Gather all HDF5 files from the immediate subdirectories of the root directories.
