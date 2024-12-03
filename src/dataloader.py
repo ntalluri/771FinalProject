@@ -145,26 +145,48 @@ class HDF5IterableDataset(IterableDataset):
     Custom dataset for loading and preprocessing HDF5 DAS data files.
     Implements lazy loading and on-the-fly preprocessing to manage memory efficiently.
 
-    Following the report specifications, this dataset:
-    - Handles variable-sized input data
-    - Applies necessary preprocessing steps
-    - Supports different padding and encoding strategies
-    - Implements memory-efficient lazy loading
+    Supports multiple root directories and nested directories containing HDF5 files,
+    with the ability to exclude specific folders.
     """
 
-    def __init__(self, file_dir, padding_strategy='zero', pos_encoding_method='add'):
+    def __init__(self, root_dirs, exclude_dirs=None, padding_strategy='zero', pos_encoding_method='add'):
         """
         Initialize the dataset with customizable preprocessing options.
 
         Args:
-            file_dir (str): Directory containing HDF5 files
+            root_dirs (list or str): List of root directories or a single root directory
+            exclude_dirs (list or set): List of folder names to exclude from processing
             padding_strategy (str): Strategy for padding rows ('zero', 'noise', 'repeat', 'mirror')
             pos_encoding_method (str): Method for positional encoding ('add', 'concat')
         """
-        self.file_dir = file_dir
-        self.file_paths = [os.path.join(file_dir, f) for f in os.listdir(file_dir) if f.endswith('.h5')]
+        if isinstance(root_dirs, str):
+            root_dirs = [root_dirs]
+        self.root_dirs = root_dirs
+        self.exclude_dirs = set(exclude_dirs) if exclude_dirs else set()
+        self.file_paths = self._gather_files()
+        if not self.file_paths:
+            raise ValueError(f"No valid HDF5 files found in the provided directories.")
         self.padding_strategy = padding_strategy
         self.pos_encoding_method = pos_encoding_method
+
+    def _gather_files(self):
+        """
+        Recursively gather all HDF5 files from the specified root directories,
+        excluding specified directories.
+
+        Returns:
+            list: List of file paths to process
+        """
+        file_paths = []
+        for root_dir in self.root_dirs:
+            for dirpath, dirnames, filenames in os.walk(root_dir):
+                # Remove excluded directories from the search path
+                dirnames[:] = [d for d in dirnames if d not in self.exclude_dirs]
+                # Add HDF5 files from the current directory
+                for filename in filenames:
+                    if filename.endswith('.h5'):
+                        file_paths.append(os.path.join(dirpath, filename))
+        return file_paths
 
     def __len__(self):
         return len(self.file_paths)
