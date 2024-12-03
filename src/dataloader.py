@@ -184,6 +184,8 @@ class HDF5IterableDataset(IterableDataset):
         """
         file_paths = []
         for root_dir in self.root_dirs:
+            # Debug
+            print(root_dir)
             # List immediate subdirectories in the root directory
             try:
                 subdirs = [
@@ -207,6 +209,7 @@ class HDF5IterableDataset(IterableDataset):
                 except FileNotFoundError:
                     print(f"Subdirectory not found: {subdir_path}")
                     continue
+        print("done getting files")
         return file_paths
 
     def __len__(self):
