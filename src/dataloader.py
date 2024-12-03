@@ -192,6 +192,7 @@ class HDF5IterableDataset(IterableDataset):
         Returns:
             torch.Tensor: Processed data tensor, or None if file is invalid
         """
+        print("here")
         with h5py.File(file_path, 'r') as file:
             fs = file['Acquisition/Raw[0]'].attrs["OutputDataRate"]
             raw_data_np = file['Acquisition/Raw[0]/RawData'][:]

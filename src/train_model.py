@@ -73,7 +73,7 @@ val_dataset = HDF5IterableDataset(val_file_paths)
 test_dataset = HDF5IterableDataset(test_file_paths)
 
 # Create data loaders
-batch_size = 32
+batch_size = 4
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False)
 val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
