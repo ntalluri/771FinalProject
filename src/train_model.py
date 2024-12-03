@@ -62,6 +62,12 @@ layers = 6
 # not tunable parameters 
 MAX_ROWS = 1387
 REQUIRED_COLUMNS = 30000
+model = MAEModel(
+    input_dim=REQUIRED_COLUMNS,
+    embed_dim=embedding_dim,
+    num_heads=number_heads,
+    depth=layers
+)
 criterion = nn.MSELoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
@@ -93,13 +99,6 @@ test_dataset = HDF5IterableDataset(test_file_paths, padding_strategy = padding, 
 train_loader = DataLoader(train_dataset, batch_size=batch, shuffle=False)
 val_loader = DataLoader(val_dataset, batch_size=batch, shuffle=False)
 test_loader = DataLoader(test_dataset, batch_size=batch, shuffle=False)
-
-model = MAEModel(
-    input_dim=REQUIRED_COLUMNS,
-    embed_dim=embedding_dim,
-    num_heads=number_heads,
-    depth=layers
-)
 
 for epoch in range(num_epochs):
     print(f"Epoch {epoch + 1}")
