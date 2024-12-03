@@ -49,6 +49,7 @@ def gather_all_file_paths(root_dirs):
     return file_paths
 
 # tunable parameters
+# TODO: update this to do a paramter sweep 
 batch = 4
 num_epochs = 2
 learning_rate = 1e-4
