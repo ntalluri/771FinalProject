@@ -149,7 +149,7 @@ class HDF5IterableDataset(IterableDataset):
     with the ability to exclude specific folders.
     """
 
-    def __init__(self, root_dirs, exclude_dirs=None, padding_strategy='zero', pos_encoding_method='add'):
+    def __init__(self, root_dirs, padding_strategy='zero', pos_encoding_method='add'):
         """
         Initialize the dataset with customizable preprocessing options.
 
@@ -163,8 +163,6 @@ class HDF5IterableDataset(IterableDataset):
             root_dirs = [root_dirs]
         self.root_dirs = root_dirs
         print(self.root_dirs)
-        self.exclude_dirs = set(exclude_dirs) if exclude_dirs else set()
-        print(self.exclude_dirs)
         self.file_paths = self._gather_files()
         if not self.file_paths:
             raise ValueError(f"No valid HDF5 files found in the provided directories.")
@@ -173,24 +171,36 @@ class HDF5IterableDataset(IterableDataset):
 
     def _gather_files(self):
         """
-        Recursively gather all HDF5 files from the specified root directories,
-        excluding specified directories.
+        Gather all HDF5 files from the immediate subdirectories of the root directories.
 
         Returns:
             list: List of file paths to process
         """
         file_paths = []
         for root_dir in self.root_dirs:
-            print(root_dir)
-            for dirpath, dirnames, filenames in os.walk(root_dir):
-                print(dirpath, dirnames, filenames)
-                # Remove excluded directories from the search path
-                dirnames[:] = [d for d in dirnames if d not in self.exclude_dirs]
-                print(dirpath, dirnames, filenames)
-                # Add HDF5 files from the current directory
-                for filename in filenames:
-                    if filename.endswith('.h5'):
-                        file_paths.append(os.path.join(dirpath, filename))
+            # List immediate subdirectories in the root directory
+            try:
+                subdirs = [
+                    d for d in os.listdir(root_dir)
+                    if os.path.isdir(os.path.join(root_dir, d))
+                ]
+            except FileNotFoundError:
+                print(f"Root directory not found: {root_dir}")
+                continue
+
+            for subdir in subdirs:
+                subdir_path = os.path.join(root_dir, subdir)
+                # List files ending with '.h5' in the current subdirectory (non-recursive)
+                try:
+                    h5_files = [
+                        os.path.join(subdir_path, f)
+                        for f in os.listdir(subdir_path)
+                        if os.path.isfile(os.path.join(subdir_path, f)) and f.endswith('.h5')
+                    ]
+                    file_paths.extend(h5_files)
+                except FileNotFoundError:
+                    print(f"Subdirectory not found: {subdir_path}")
+                    continue
         return file_paths
 
     def __len__(self):
