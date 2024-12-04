@@ -6,20 +6,11 @@ from dataloader import HDF5IterableDataset, generate_row_mask
 from MAE import MAEModel
 import torch.nn as nn
 import random 
+import itertools
+import pandas as pd
+import copy
 
-# tunable parameters
-# TODO: update this to do a paramter sweep 
-# batch = 4
-# num_epochs = 2
-# learning_rate = 1e-4
-# mask_ratio = 0.25
-# padding = 'zero'
-# positional_encodings = 'add'
-# embedding_dim = 512
-# number_heads = 8
-# layers = 6
-
-# Tunable parameters and their ranges
+# tunable parameters and their ranges
 param_grid = {
     'batch_size': [4, 8],
     'num_epochs': [2],
@@ -36,8 +27,7 @@ param_grid = {
 MAX_ROWS = 1387
 REQUIRED_COLUMNS = 30000
 
-
-# List of folder paths
+# list of folder paths
 folder_paths = [
     "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220509_00",
     "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220513_16",
@@ -141,10 +131,9 @@ folder_paths = [
     "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220506_13",
 ]
 
-
 all_file_paths = []
 for subdir_path in folder_paths:
-    # List files ending with '.h5' in the current subdirectory (non-recursive)
+    # list files ending with '.h5' in the current subdirectory (non-recursive)
     try:
         files_in_subdir = os.listdir(subdir_path)
     except FileNotFoundError:
@@ -158,8 +147,10 @@ for subdir_path in folder_paths:
     ]
     all_file_paths.extend(h5_files)
 
-# Shuffle and split the file paths
+# shuffle and split the file paths
 random.shuffle(all_file_paths)
+# TODO make this work for mutliple gpus
+# TODO: we only need train and val, since we are only finetuning
 train_ratio = 0.7
 val_ratio = 0.15
 test_ratio = 0.15
@@ -170,16 +161,47 @@ train_file_paths = all_file_paths[:train_end]
 val_file_paths = all_file_paths[train_end:val_end]
 test_file_paths = all_file_paths[val_end:]
 
-# Create datasets
+# create datasets
 def create_datasets(padding_strategy, pos_encoding_method):
     train_dataset = HDF5IterableDataset(train_file_paths, padding_strategy=padding_strategy, pos_encoding_method=pos_encoding_method)
     val_dataset = HDF5IterableDataset(val_file_paths, padding_strategy=padding_strategy, pos_encoding_method=pos_encoding_method)
     test_dataset = HDF5IterableDataset(test_file_paths, padding_strategy=padding_strategy, pos_encoding_method=pos_encoding_method)
     return train_dataset, val_dataset, test_dataset
 
+# function to compute Pearson correlation coefficient
+# TODO: I have no idea if this will work
+def compute_batch_pearson_correlation(reconstructed, batch_data, row_mask):
+    # reconstructed and batch_data are tensors of shape [batch_size, MAX_ROWS, REQUIRED_COLUMNS]
+    # row_mask is of shape [batch_size, MAX_ROWS]
+    # We want to compute the Pearson correlation over the masked positions
+    # For each sample in the batch, we select the masked rows
+    batch_size = reconstructed.size(0)
+    correlations = []
+    for i in range(batch_size):
+        mask = row_mask[i]  # shape: [MAX_ROWS]
+        x = reconstructed[i][mask]  # shape: [num_masked_rows, REQUIRED_COLUMNS]
+        y = batch_data[i][mask]     # same shape
+        if x.numel() == 0:
+            continue  # skip samples with no masked rows
+        x_flat = x.flatten()
+        y_flat = y.flatten()
+        # Compute Pearson correlation between x_flat and y_flat
+        x_mean = torch.mean(x_flat)
+        y_mean = torch.mean(y_flat)
+        x_centered = x_flat - x_mean
+        y_centered = y_flat - y_mean
+        numerator = torch.sum(x_centered * y_centered)
+        denominator = torch.sqrt(torch.sum(x_centered ** 2)) * torch.sqrt(torch.sum(y_centered ** 2))
+        correlation = numerator / (denominator + 1e-8)  # add epsilon to prevent division by zero
+        correlations.append(correlation.item())
+    if correlations:
+        return sum(correlations) / len(correlations)
+    else:
+        return 0.0
+
 # Training and evaluation function
 def train_and_evaluate(params):
-    # Unpack parameters
+    # unpack parameters
     batch_size = params['batch_size']
     num_epochs = params['num_epochs']
     learning_rate = params['learning_rate']
@@ -192,13 +214,16 @@ def train_and_evaluate(params):
     
     print(f"Training with parameters: {params}")
     
-    # Create datasets and loaders
+    # create datasets and loaders
+    # TODO: I want this to only happen onces, not everytime the function is called
+    # TODO: is this loading all the data prior to training? 
+    # TODO: could we load per batch instead. A dataloader per batch?
     train_dataset, val_dataset, test_dataset = create_datasets(padding, positional_encodings)
     train_loader = DataLoader(train_dataset, batch_size=batch_size)
     val_loader = DataLoader(val_dataset, batch_size=batch_size)
     test_loader = DataLoader(test_dataset, batch_size=batch_size)
     
-    # Initialize model, criterion, optimizer
+    # init model, criterion, optimizer
     model = MAEModel(
         input_dim=REQUIRED_COLUMNS,
         embed_dim=embedding_dim,
@@ -208,10 +233,11 @@ def train_and_evaluate(params):
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     
-    # Training loop
+    # training loop
     for epoch in range(num_epochs):
         model.train()
         train_loss = 0.0
+        train_corr = 0.0
         num_batches = 0
 
         for batch_idx, batch_data in enumerate(train_loader):
@@ -225,13 +251,20 @@ def train_and_evaluate(params):
             loss.backward()
             optimizer.step()
             train_loss += loss.item()
+
+            # compute pearson correlation
+            corr = compute_batch_pearson_correlation(reconstructed, batch_data, row_mask)
+            train_corr += corr
+
             num_batches += 1
 
         train_loss /= max(num_batches, 1)
+        train_corr /= max(num_batches, 1)
 
-        # Validation loop
+        # validation loop
         model.eval()
         val_loss = 0.0
+        val_corr = 0.0
         val_batches = 0
         with torch.no_grad():
             for batch_data in val_loader:
@@ -242,14 +275,21 @@ def train_and_evaluate(params):
                     batch_data[row_mask.unsqueeze(-1).expand_as(batch_data)]
                 )
                 val_loss += loss.item()
+
+                # compute Pearson correlation
+                corr = compute_batch_pearson_correlation(reconstructed, batch_data, row_mask)
+                val_corr += corr
+
                 val_batches += 1
 
         val_loss /= max(val_batches, 1)
-        print(f"Epoch {epoch + 1}, Training Loss: {train_loss:.4f}, Validation Loss: {val_loss:.4f}")
+        val_corr /= max(val_batches, 1)
+        print(f"Epoch {epoch + 1}, Training Loss: {train_loss:.4f}, Validation Loss: {val_loss:.4f}, Training Corr: {train_corr:.4f}, Validation Corr: {val_corr:.4f}")
     
     # Testing loop
     model.eval()
     test_loss = 0.0
+    test_corr = 0.0
     test_batches = 0
     with torch.no_grad():
         for batch_data in test_loader:
@@ -260,12 +300,18 @@ def train_and_evaluate(params):
                 batch_data[row_mask.unsqueeze(-1).expand_as(batch_data)]
             )
             test_loss += loss.item()
+
+            # Compute Pearson correlation
+            corr = compute_batch_pearson_correlation(reconstructed, batch_data, row_mask)
+            test_corr += corr
+
             test_batches += 1
 
     test_loss /= max(test_batches, 1)
-    print(f"Test Loss: {test_loss:.4f}")
+    test_corr /= max(test_batches, 1)
+    print(f"Test Loss: {test_loss:.4f}, Test Corr: {test_corr:.4f}")
     
-    return val_loss, test_loss, copy.deepcopy(model)
+    return val_loss, test_loss, val_corr, test_corr, copy.deepcopy(model)
 
 # Parameter combinations
 param_combinations = list(itertools.product(*param_grid.values()))
@@ -273,23 +319,32 @@ param_names = list(param_grid.keys())
 
 # Store results
 results = []
-best_val_loss = float('inf')
+# best_val_loss = float('inf')
+best_val_corr = float('-inf')
 best_model = None
 best_params = None
 
 # Loop over all parameter combinations
 for param_values in param_combinations:
     params = dict(zip(param_names, param_values))
-    val_loss, test_loss, model = train_and_evaluate(params)
+    val_loss, test_loss, val_corr, test_corr, model = train_and_evaluate(params)
     results.append({
         **params,
         'val_loss': val_loss,
-        'test_loss': test_loss
+        'test_loss': test_loss,
+        'val_corr': val_corr,
+        'test_corr': test_corr
     })
     
-    # Save the best model
-    if val_loss < best_val_loss:
-        best_val_loss = val_loss
+    # Save the best model based on validation loss
+    # if val_loss < best_val_loss:
+    #     best_val_loss = val_loss
+    #     best_model = model
+    #     best_params = params
+
+    # Save the best model based on validation correlation
+    if val_corr > best_val_corr:
+        best_val_corr = val_corr
         best_model = model
         best_params = params
 

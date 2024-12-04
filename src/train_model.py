@@ -96,6 +96,8 @@ val_dataset = HDF5IterableDataset(val_file_paths, padding_strategy = padding, po
 test_dataset = HDF5IterableDataset(test_file_paths, padding_strategy = padding, pos_encoding_method=positional_encodings)
  
 # Create data loaders
+# TODO: is this loading all the data prior to training? 
+# TODO: could we load per batch instead. A dataloader per batch?
 train_loader = DataLoader(train_dataset, batch_size=batch, shuffle=True)
 val_loader = DataLoader(val_dataset, batch_size=batch, shuffle=True)
 test_loader = DataLoader(test_dataset, batch_size=batch, shuffle=True)
