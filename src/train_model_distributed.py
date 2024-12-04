@@ -3,13 +3,69 @@ import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.distributed import DistributedSampler
-from sklearn.model_selection import train_test_split
-from dataloader import HDF5IterableDataset, generate_row_mask
+from dataloader import generate_row_mask, custom_padding, add_positional_encoding
 from MAE import MAEModel
 import torch.nn as nn
 import random
+import h5py
+import numpy as np
+from scipy import signal
+
+
+class HDF5Dataset(Dataset):
+    """
+    Dataset class for HDF5 files that supports distributed training
+    """
+
+    def __init__(self, file_paths, padding_strategy='zero', pos_encoding_method='add'):
+        self.file_paths = file_paths
+        self.padding_strategy = padding_strategy
+        self.pos_encoding_method = pos_encoding_method
+        self.MIN_ROWS = 1357
+        self.MAX_ROWS = 1387
+        self.REQUIRED_COLUMNS = 30000
+
+    def __len__(self):
+        return len(self.file_paths)
+
+    def process_file(self, file_path):
+        with h5py.File(file_path, 'r') as file:
+            fs = file['Acquisition/Raw[0]'].attrs["OutputDataRate"]
+            raw_data_np = file['Acquisition/Raw[0]/RawData'][:]
+
+            rows, cols = raw_data_np.shape
+            if cols != self.REQUIRED_COLUMNS or rows < self.MIN_ROWS or rows > self.MAX_ROWS:
+                return None
+
+            # Apply preprocessing transformations
+            data_detrend = signal.detrend(raw_data_np, type='linear')
+            sos = signal.butter(5, [20, 100], 'bandpass', fs=fs, output='sos')
+            data_filtered = signal.sosfilt(sos, data_detrend)
+
+            # Normalize the filtered data
+            data_normalized = (data_filtered - np.mean(data_filtered)) / (np.std(data_filtered) + 1e-8)
+
+            # Apply padding with selected strategy
+            data_padded = custom_padding(data_normalized, self.MAX_ROWS, strategy=self.padding_strategy)
+
+            # Apply positional encoding with selected method
+            data_with_pos_encoding = add_positional_encoding(data_padded, method=self.pos_encoding_method)
+
+            return torch.tensor(data_with_pos_encoding, dtype=torch.float32)
+
+    def __getitem__(self, idx):
+        file_path = self.file_paths[idx]
+        try:
+            data = self.process_file(file_path)
+            if data is None:
+                # Return a zero tensor if the file is invalid
+                return torch.zeros((self.MAX_ROWS, self.REQUIRED_COLUMNS), dtype=torch.float32)
+            return data
+        except Exception as e:
+            print(f"Error processing file {file_path}: {str(e)}")
+            return torch.zeros((self.MAX_ROWS, self.REQUIRED_COLUMNS), dtype=torch.float32)
 
 
 def setup(rank, world_size):
@@ -33,6 +89,7 @@ def train(rank, world_size, args):
     Training function for each process.
     """
     setup(rank, world_size)
+    torch.cuda.set_device(rank)
 
     # Parameters
     batch = args.batch_size
@@ -55,9 +112,8 @@ def train(rank, world_size, args):
         depth=layers
     ).to(rank)
 
-    # Wrap model with DDP
+    # Wrap the model with DDP
     model = DDP(model, device_ids=[rank])
-
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
@@ -68,7 +124,8 @@ def train(rank, world_size, args):
         try:
             subdirs = [d for d in os.listdir(root_dir) if os.path.isdir(os.path.join(root_dir, d))]
         except FileNotFoundError:
-            print(f"Root directory not found: {root_dir}")
+            if rank == 0:
+                print(f"Root directory not found: {root_dir}")
             continue
 
         for subdir in subdirs:
@@ -86,7 +143,7 @@ def train(rank, world_size, args):
             all_file_paths.extend(h5_files)
 
     # Split datasets
-    random.seed(42)  # Ensure all processes have the same shuffle
+    random.seed(42)
     random.shuffle(all_file_paths)
     train_ratio = 0.7
     val_ratio = 0.15
@@ -97,24 +154,41 @@ def train(rank, world_size, args):
     val_file_paths = all_file_paths[train_end:val_end]
     test_file_paths = all_file_paths[val_end:]
 
-    # Create datasets and samplers
-    train_dataset = HDF5IterableDataset(train_file_paths, padding_strategy=padding,
-                                        pos_encoding_method=positional_encodings)
-    val_dataset = HDF5IterableDataset(val_file_paths, padding_strategy=padding,
-                                      pos_encoding_method=positional_encodings)
-    test_dataset = HDF5IterableDataset(test_file_paths, padding_strategy=padding,
-                                       pos_encoding_method=positional_encodings)
+    if rank == 0:
+        print(f"Total files: {total_files}")
+        print(f"Training files: {len(train_file_paths)}")
+        print(f"Validation files: {len(val_file_paths)}")
+        print(f"Testing files: {len(test_file_paths)}")
 
-    train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank)
+    # Create datasets
+    train_dataset = HDF5Dataset(train_file_paths, padding_strategy=padding, pos_encoding_method=positional_encodings)
+    val_dataset = HDF5Dataset(val_file_paths, padding_strategy=padding, pos_encoding_method=positional_encodings)
+    test_dataset = HDF5Dataset(test_file_paths, padding_strategy=padding, pos_encoding_method=positional_encodings)
 
-    # Create dataloaders
+    # Create samplers and dataloaders
+    train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True)
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch,
-        sampler=train_sampler
+        sampler=train_sampler,
+        num_workers=4,
+        pin_memory=True
     )
-    val_loader = DataLoader(val_dataset, batch_size=batch)
-    test_loader = DataLoader(test_dataset, batch_size=batch)
+
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch,
+        num_workers=4,
+        pin_memory=True
+    )
+
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=batch,
+        num_workers=4,
+        pin_memory=True
+    )
 
     # Training loop
     for epoch in range(num_epochs):
@@ -143,9 +217,14 @@ def train(rank, world_size, args):
             if batch_idx % 10 == 0 and rank == 0:
                 print(f"Epoch {epoch + 1}, Batch {batch_idx}, Loss: {loss.item():.4f}")
 
-        # Only print from rank 0
+        # Average training loss across all processes
+        train_loss = train_loss / num_batches
+        train_loss_tensor = torch.tensor(train_loss).to(rank)
+        dist.reduce(train_loss_tensor, 0, op=dist.ReduceOp.SUM)
+
         if rank == 0:
-            print(f"Epoch {epoch + 1} Training Loss: {train_loss / num_batches:.4f}")
+            train_loss = train_loss_tensor.item() / world_size
+            print(f"Epoch {epoch + 1} Average Training Loss: {train_loss:.4f}")
 
             # Validation (only on rank 0)
             model.eval()
@@ -191,7 +270,10 @@ def train(rank, world_size, args):
 
 
 def main():
-    # Training settings
+    """
+    Main function to set up distributed training
+    """
+
     class Args:
         def __init__(self):
             self.batch_size = 4
@@ -206,12 +288,10 @@ def main():
 
     args = Args()
 
-    # Get number of available GPUs
     world_size = torch.cuda.device_count()
     print(f"Found {world_size} GPUs!")
 
     if world_size > 1:
-        # Use all available GPUs
         mp.spawn(
             train,
             args=(world_size, args),
@@ -219,7 +299,6 @@ def main():
             join=True
         )
     else:
-        # Single GPU or CPU training
         train(0, 1, args)
 
 
