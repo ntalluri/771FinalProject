@@ -249,6 +249,7 @@ def train_and_evaluate(params, train_loader, val_loader):
             optimizer.zero_grad()
             row_mask = generate_row_mask(batch_data.size(0), MAX_ROWS, mask_ratio).to(device) # NEW
             reconstructed = model(batch_data, row_mask)
+            reconstructed.to(device)
             loss = criterion(
                 reconstructed[row_mask.unsqueeze(-1).expand_as(reconstructed)],
                 batch_data[row_mask.unsqueeze(-1).expand_as(batch_data)]
@@ -276,6 +277,7 @@ def train_and_evaluate(params, train_loader, val_loader):
                 batch_data = batch_data.to(device)  # New 
                 row_mask = generate_row_mask(batch_data.size(0), MAX_ROWS, mask_ratio).to(device) # New
                 reconstructed = model(batch_data, row_mask)
+                reconstructed.to(device)
                 loss = criterion(
                     reconstructed[row_mask.unsqueeze(-1).expand_as(reconstructed)],
                     batch_data[row_mask.unsqueeze(-1).expand_as(batch_data)]
@@ -306,7 +308,7 @@ best_model = None
 best_params = None
 
 # cache of the dataloaders for a specific padding and positional_encoding
-dataset_cache = {} # TODO: should we write them to disk instead of keeping the in memory?
+dataset_cache = {}
 
 # loop over all parameter combinations
 for param_values in param_combinations:
