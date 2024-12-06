@@ -160,34 +160,56 @@ val_file_paths = all_file_paths[train_end:]
 
 # function to compute Pearson correlation coefficient
 # TODO: I have no idea if this will work
+# def compute_batch_pearson_correlation(reconstructed, batch_data, row_mask):
+#     # reconstructed and batch_data are tensors of shape [batch_size, MAX_ROWS, REQUIRED_COLUMNS]
+#     # row_mask is of shape [batch_size, MAX_ROWS]
+#     # We want to compute the Pe=arson correlation over the masked positions
+#     # For each sample in the batch, we select the masked rows
+#     batch_size = reconstructed.size(0)
+#     correlations = []
+#     for i in range(batch_size):
+#         mask = row_mask[i]  # shape: [MAX_ROWS]
+#         x = reconstructed[i][mask]  # shape: [num_masked_rows, REQUIRED_COLUMNS]
+#         y = batch_data[i][mask]     # same shape
+#         if x.numel() == 0:
+#             continue  # skip samples with no masked rows
+#         x_flat = x.flatten()
+#         y_flat = y.flatten()
+#         # Compute Pearson correlation between x_flat and y_flat
+#         x_mean = torch.mean(x_flat)
+#         y_mean = torch.mean(y_flat)
+#         x_centered = x_flat - x_mean
+#         y_centered = y_flat - y_mean
+#         numerator = torch.sum(x_centered * y_centered)
+#         denominator = torch.sqrt(torch.sum(x_centered ** 2)) * torch.sqrt(torch.sum(y_centered ** 2))
+#         correlation = numerator / (denominator + 1e-8)  # add epsilon to prevent division by zero
+#         correlations.append(correlation.item())
+#     if correlations:
+#         return sum(correlations) / len(correlations)
+#     else:
+#         return 0.0
 def compute_batch_pearson_correlation(reconstructed, batch_data, row_mask):
-    # reconstructed and batch_data are tensors of shape [batch_size, MAX_ROWS, REQUIRED_COLUMNS]
-    # row_mask is of shape [batch_size, MAX_ROWS]
-    # We want to compute the Pe=arson correlation over the masked positions
-    # For each sample in the batch, we select the masked rows
     batch_size = reconstructed.size(0)
     correlations = []
     for i in range(batch_size):
-        mask = row_mask[i]  # shape: [MAX_ROWS]
-        x = reconstructed[i][mask]  # shape: [num_masked_rows, REQUIRED_COLUMNS]
-        y = batch_data[i][mask]     # same shape
+        mask = row_mask[i]
+        x = reconstructed[i][mask]
+        y = batch_data[i][mask]
         if x.numel() == 0:
-            continue  # skip samples with no masked rows
+            continue
         x_flat = x.flatten()
         y_flat = y.flatten()
-        # Compute Pearson correlation between x_flat and y_flat
+        
         x_mean = torch.mean(x_flat)
         y_mean = torch.mean(y_flat)
         x_centered = x_flat - x_mean
         y_centered = y_flat - y_mean
         numerator = torch.sum(x_centered * y_centered)
         denominator = torch.sqrt(torch.sum(x_centered ** 2)) * torch.sqrt(torch.sum(y_centered ** 2))
-        correlation = numerator / (denominator + 1e-8)  # add epsilon to prevent division by zero
+        correlation = torch.abs(numerator / (denominator + 1e-8))  # Added abs()
         correlations.append(correlation.item())
-    if correlations:
-        return sum(correlations) / len(correlations)
-    else:
-        return 0.0
+    
+    return sum(correlations) / len(correlations) if correlations else 0.0
 
 # training and evaluation function
 def train_and_evaluate(params, train_loader, val_loader):
@@ -350,6 +372,10 @@ for param_values in param_combinations:
         'val_loss': val_loss,
         'val_corr': val_corr,
     })
+
+    results_df = pd.DataFrame(results)
+    df.to_csv("parameter_tuning_results".csv, mode='a', header=not os.path.exists(filename), index=False)
+    print("Results saved to current parameter_tuning_results.csv")
     
     # Save the best model based on validation loss
     # if val_loss < best_val_loss:
@@ -370,5 +396,5 @@ print(f"Best model saved to {model_save_path} with parameters {best_params}")
 
 # save all of the results to a CSV file
 results_df = pd.DataFrame(results)
-results_df.to_csv('parameter_tuning_results.csv', index=False)
+results_df.to_csv('all_parameter_tuning_results.csv', index=False)
 print("Results saved to parameter_tuning_results.csv")
