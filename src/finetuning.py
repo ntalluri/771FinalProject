@@ -24,15 +24,27 @@ import copy
 
 param_grid = {
     'batch_size': [6],
-    'num_epochs': [2],
-    'learning_rate': [1e-4],
-    'mask_ratio': [0.25],
+    'num_epochs': [2, 4],
+    'learning_rate': [1e-4, 1e-3],
+    'mask_ratio': [0.25, 0.5],
     'padding': ['zero'],
-    'positional_encodings': ['add'],
-    'embedding_dim': [256],
-    'number_heads': [4],
-    'layers': [4]
+    'positional_encodings': ['add', 'concat'],
+    'embedding_dim': [256, 512],
+    'number_heads': [4, 8],
+    'layers': [4, 6]
 }
+
+# param_grid = {
+#     'batch_size': [6],
+#     'num_epochs': [2],
+#     'learning_rate': [1e-4],
+#     'mask_ratio': [0.25],
+#     'padding': ['zero'],
+#     'positional_encodings': ['add'],
+#     'embedding_dim': [256],
+#     'number_heads': [4],
+#     'layers': [4]
+# }
 
 # not tunable parameters 
 MAX_ROWS = 1387
@@ -61,42 +73,42 @@ folder_paths = [
     "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220509_12",
     "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220518_08",
     "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220509_11",
-    "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220516_09",
-    "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220505_04",
-    "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220513_00",
-    "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220506_07",
-    "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220512_17",
-    "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220506_00",
-    "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220508_07",
-    "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220510_15",
-    "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220512_08",
-    "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220518_11",
-    "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220510_05",
-    "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220515_08",
-    "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220514_12",
-    "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220518_06",
-    "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220517_06",
-    "/media/jesse/sda/Organized_SURF/seis_sensor_processed_20230201_22",
-    "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220517_00",
-    "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220507_11",
-    "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220511_20",
-    "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220506_15",
-    "/media/jesse/sda/Organized_SURF/seis_sensor_processed_20230202_06",
-    "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220512_21",
-    "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220512_11",
-    "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220512_23",
-    "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220515_03",
-    "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220518_17",
-    "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220515_14",
-    "/media/jesse/sda/Organized_SURF/seis_sensor_processed_20230202_09",
-    "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220510_23",
-    "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220505_23",
-    "/media/jesse/sda/Organized_SURF/seis_sensor_processed_20230202_18",
-    "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220509_07",
-    "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220517_15",
-    "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220519_08",
-    "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220509_09",
-    "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220518_19",
+    # "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220516_09",
+    # "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220505_04",
+    # "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220513_00",
+    # "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220506_07",
+    # "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220512_17",
+    # "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220506_00",
+    # "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220508_07",
+    # "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220510_15",
+    # "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220512_08",
+    # "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220518_11",
+    # "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220510_05",
+    # "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220515_08",
+    # "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220514_12",
+    # "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220518_06",
+    # "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220517_06",
+    # "/media/jesse/sda/Organized_SURF/seis_sensor_processed_20230201_22",
+    # "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220517_00",
+    # "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220507_11",
+    # "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220511_20",
+    # "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220506_15",
+    # "/media/jesse/sda/Organized_SURF/seis_sensor_processed_20230202_06",
+    # "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220512_21",
+    # "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220512_11",
+    # "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220512_23",
+    # "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220515_03",
+    # "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220518_17",
+    # "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220515_14",
+    # "/media/jesse/sda/Organized_SURF/seis_sensor_processed_20230202_09",
+    # "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220510_23",
+    # "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220505_23",
+    # "/media/jesse/sda/Organized_SURF/seis_sensor_processed_20230202_18",
+    # "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220509_07",
+    # "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220517_15",
+    # "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220519_08",
+    # "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220509_09",
+    # "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220518_19",
     # "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220513_10",
     # "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220515_02",
     # "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220515_10",
@@ -336,8 +348,8 @@ param_names = list(param_grid.keys())
 
 # store all the results
 results = []
-# best_val_loss = float('inf')
-best_val_corr = float('-inf')
+best_val_loss = float('inf')
+# best_val_corr = float('-inf')
 best_model = None
 best_params = None
 
@@ -385,21 +397,21 @@ for param_values in param_combinations:
         'val_corr': val_corr,
     })
 
-    results_df = pd.DataFrame(results)
-    df.to_csv("parameter_tuning_results".csv, mode='a', header=not os.path.exists(filename), index=False)
+    df = pd.DataFrame(results)
+    df.to_csv("parameter_tuning_results.csv", mode='a', index=False)
     print("Results saved to current parameter_tuning_results.csv")
     
     # Save the best model based on validation loss
-    # if val_loss < best_val_loss:
-    #     best_val_loss = val_loss
-    #     best_model = model
-    #     best_params = params
-
-    # Save the best model based on validation correlation
-    if val_corr > best_val_corr:
-        best_val_corr = val_corr
+    if val_loss < best_val_loss:
+        best_val_loss = val_loss
         best_model = model
         best_params = params
+
+    # Save the best model based on validation correlation
+    # if val_corr > best_val_corr:
+    #     best_val_corr = val_corr
+    #     best_model = model
+    #     best_params = params
 
 # save the best model
 model_save_path = "best_trained_mae_model.pt"
