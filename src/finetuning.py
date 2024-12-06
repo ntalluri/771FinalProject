@@ -331,9 +331,9 @@ for param_values in param_combinations:
         )
 
         print("making train loader")
-        train_loader = DataLoader(train_dataset, batch_size=params['batch_size'], num_workers=0)
+        train_loader = DataLoader(train_dataset, batch_size=params['batch_size'], num_workers=4)
         print("making val loader")
-        val_loader = DataLoader(val_dataset, batch_size=params['batch_size'], num_workers=0)
+        val_loader = DataLoader(val_dataset, batch_size=params['batch_size'], num_workers=4)
 
         # cache the loaders
         print("caching the train and val loader")

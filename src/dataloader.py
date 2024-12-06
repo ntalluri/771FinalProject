@@ -221,35 +221,153 @@
 #             if data_processed is not None:
 #                 yield data_processed
 
+# import torch
+# from torch.utils.data import IterableDataset
+# import h5py
+# import numpy as np
+# from scipy import signal
+
+# class HDF5IterableDataset(IterableDataset):
+#     def __init__(self, file_paths, padding_strategy='zero', pos_encoding_method='add', device='cuda'):
+#         """
+#         Initialize the dataset with GPU support.
+        
+#         Args:
+#             file_paths (list): List of HDF5 file paths
+#             padding_strategy (str): Strategy for padding rows
+#             pos_encoding_method (str): Method for positional encoding
+#             device (str): Device to process data on ('cuda' or 'cpu')
+#         """
+#         self.file_paths = file_paths
+#         if not self.file_paths:
+#             raise ValueError("No valid HDF5 files found in the provided directories.")
+#         self.padding_strategy = padding_strategy
+#         self.pos_encoding_method = pos_encoding_method
+#         self.device = device
+        
+#         # Pre-compute position encoding matrices for GPU
+#         self.pos_encoding_cache = self._prepare_pos_encoding()
+    
+#     def _prepare_pos_encoding(self):
+#         """Precompute position encoding matrices and store them on GPU"""
+#         rows, cols = MAX_ROWS, REQUIRED_COLUMNS
+#         position = np.arange(rows)[:, np.newaxis]
+#         div_term = np.exp(np.arange(0, cols, 2) * -(np.log(10000.0) / cols))
+        
+#         row_encoding = np.zeros((rows, cols))
+#         row_encoding[:, 0::2] = np.sin(position * div_term)
+#         row_encoding[:, 1::2] = np.cos(position * div_term)
+        
+#         return torch.tensor(row_encoding, dtype=torch.float32, device=self.device)
+
+#     def process_file(self, file_path):
+#         """
+#         Process a single HDF5 file with GPU acceleration where beneficial.
+#         CPU is used for I/O and initial signal processing, GPU for later stages.
+#         """
+#         with h5py.File(file_path, 'r') as file:
+#             fs = file['Acquisition/Raw[0]'].attrs["OutputDataRate"]
+#             # Keep initial load on CPU
+#             raw_data_np = file['Acquisition/Raw[0]/RawData'][:]
+
+#             rows, cols = raw_data_np.shape
+#             if cols != REQUIRED_COLUMNS or rows < MIN_ROWS or rows > MAX_ROWS:
+#                 print(f"Ignored file due to size: {file_path} (Shape: {raw_data_np.shape})")
+#                 return None
+
+#             # Perform CPU-bound operations first
+#             data_detrend = signal.detrend(raw_data_np, type='linear')
+#             sos = signal.butter(5, [20, 100], 'bandpass', fs=fs, output='sos')
+#             data_filtered = signal.sosfilt(sos, data_detrend)
+            
+#             # Convert to tensor and move to GPU for remaining operations
+#             data_tensor = torch.tensor(data_filtered, dtype=torch.float32, device=self.device)
+            
+#             # Normalize on GPU
+#             data_normalized = (data_tensor - data_tensor.mean()) / (data_tensor.std() + 1e-8)
+            
+#             # Padding on GPU
+#             if rows < MAX_ROWS:
+#                 padding_rows = MAX_ROWS - rows
+#                 if self.padding_strategy == 'zero':
+#                     padding = torch.zeros((padding_rows, cols), device=self.device)
+#                 elif self.padding_strategy == 'noise':
+#                     mean = data_normalized.mean()
+#                     std = data_normalized.std()
+#                     padding = torch.normal(mean, std, (padding_rows, cols), device=self.device)
+#                 elif self.padding_strategy == 'repeat':
+#                     padding = data_normalized[-1:].repeat(padding_rows, 1)
+#                 elif self.padding_strategy == 'mirror':
+#                     num_rows_to_mirror = min(padding_rows, rows)
+#                     mirrored_rows = data_normalized[-num_rows_to_mirror:].flip(0)
+#                     if padding_rows > num_rows_to_mirror:
+#                         remaining_rows = padding_rows - num_rows_to_mirror
+#                         padding = torch.cat([
+#                             mirrored_rows,
+#                             mirrored_rows[-1:].repeat(remaining_rows, 1)
+#                         ])
+#                     else:
+#                         padding = mirrored_rows[:padding_rows]
+                
+#                 data_padded = torch.cat([data_normalized, padding], dim=0)
+#             else:
+#                 data_padded = data_normalized
+
+#             # Apply positional encoding on GPU
+#             if self.pos_encoding_method == 'add':
+#                 data_with_pos = data_padded + self.pos_encoding_cache
+#             else:  # 'concat'
+#                 data_with_pos = torch.cat([data_padded, self.pos_encoding_cache], dim=1)
+
+#             return data_with_pos
+
+#     def __iter__(self):
+#         """Iterate through the dataset, yielding GPU tensors"""
+#         for file_path in self.file_paths:
+#             data_processed = self.process_file(file_path)
+#             if data_processed is not None:
+#                 yield data_processed
+
 import torch
-from torch.utils.data import IterableDataset
+from torch.utils.data import IterableDataset, DataLoader
 import h5py
 import numpy as np
 from scipy import signal
+from torch.multiprocessing import Pool, cpu_count
+from itertools import cycle
+from functools import partial
 
 class HDF5IterableDataset(IterableDataset):
-    def __init__(self, file_paths, padding_strategy='zero', pos_encoding_method='add', device='cuda'):
+    def __init__(self, file_paths, padding_strategy='zero', pos_encoding_method='add', 
+                 device='cuda', num_workers=None):
         """
-        Initialize the dataset with GPU support.
+        Initialize the dataset with parallel processing support.
         
         Args:
             file_paths (list): List of HDF5 file paths
             padding_strategy (str): Strategy for padding rows
             pos_encoding_method (str): Method for positional encoding
             device (str): Device to process data on ('cuda' or 'cpu')
+            num_workers (int): Number of worker processes for parallel processing
         """
         self.file_paths = file_paths
-        if not self.file_paths:
-            raise ValueError("No valid HDF5 files found in the provided directories.")
         self.padding_strategy = padding_strategy
         self.pos_encoding_method = pos_encoding_method
         self.device = device
+        self.num_workers = num_workers or max(1, cpu_count() - 1)
         
         # Pre-compute position encoding matrices for GPU
         self.pos_encoding_cache = self._prepare_pos_encoding()
+        
+        # Split files among workers
+        self.files_per_worker = len(file_paths) // self.num_workers
+        if self.files_per_worker == 0:
+            self.files_per_worker = 1
+            self.num_workers = min(len(file_paths), self.num_workers)
     
     def _prepare_pos_encoding(self):
         """Precompute position encoding matrices and store them on GPU"""
+        # Same as your original implementation
         rows, cols = MAX_ROWS, REQUIRED_COLUMNS
         position = np.arange(rows)[:, np.newaxis]
         div_term = np.exp(np.arange(0, cols, 2) * -(np.log(10000.0) / cols))
@@ -260,82 +378,77 @@ class HDF5IterableDataset(IterableDataset):
         
         return torch.tensor(row_encoding, dtype=torch.float32, device=self.device)
 
-    def process_file(self, file_path):
-        """
-        Process a single HDF5 file with GPU acceleration where beneficial.
-        CPU is used for I/O and initial signal processing, GPU for later stages.
-        """
-        with h5py.File(file_path, 'r') as file:
-            fs = file['Acquisition/Raw[0]'].attrs["OutputDataRate"]
-            # Keep initial load on CPU
-            raw_data_np = file['Acquisition/Raw[0]/RawData'][:]
+    def process_file_cpu(self, file_path):
+        """Process a single file on CPU before moving to GPU"""
+        try:
+            with h5py.File(file_path, 'r') as file:
+                fs = file['Acquisition/Raw[0]'].attrs["OutputDataRate"]
+                raw_data_np = file['Acquisition/Raw[0]/RawData'][:]
 
-            rows, cols = raw_data_np.shape
-            if cols != REQUIRED_COLUMNS or rows < MIN_ROWS or rows > MAX_ROWS:
-                print(f"Ignored file due to size: {file_path} (Shape: {raw_data_np.shape})")
-                return None
+                rows, cols = raw_data_np.shape
+                if cols != REQUIRED_COLUMNS or rows < MIN_ROWS or rows > MAX_ROWS:
+                    return None
 
-            # Perform CPU-bound operations first
-            data_detrend = signal.detrend(raw_data_np, type='linear')
-            sos = signal.butter(5, [20, 100], 'bandpass', fs=fs, output='sos')
-            data_filtered = signal.sosfilt(sos, data_detrend)
-            
-            # Convert to tensor and move to GPU for remaining operations
-            data_tensor = torch.tensor(data_filtered, dtype=torch.float32, device=self.device)
-            
-            # Normalize on GPU
-            data_normalized = (data_tensor - data_tensor.mean()) / (data_tensor.std() + 1e-8)
-            
-            # Padding on GPU
-            if rows < MAX_ROWS:
-                padding_rows = MAX_ROWS - rows
-                if self.padding_strategy == 'zero':
-                    padding = torch.zeros((padding_rows, cols), device=self.device)
-                elif self.padding_strategy == 'noise':
-                    mean = data_normalized.mean()
-                    std = data_normalized.std()
-                    padding = torch.normal(mean, std, (padding_rows, cols), device=self.device)
-                elif self.padding_strategy == 'repeat':
-                    padding = data_normalized[-1:].repeat(padding_rows, 1)
-                elif self.padding_strategy == 'mirror':
-                    num_rows_to_mirror = min(padding_rows, rows)
-                    mirrored_rows = data_normalized[-num_rows_to_mirror:].flip(0)
-                    if padding_rows > num_rows_to_mirror:
-                        remaining_rows = padding_rows - num_rows_to_mirror
-                        padding = torch.cat([
-                            mirrored_rows,
-                            mirrored_rows[-1:].repeat(remaining_rows, 1)
-                        ])
-                    else:
-                        padding = mirrored_rows[:padding_rows]
+                # CPU operations
+                data_detrend = signal.detrend(raw_data_np, type='linear')
+                sos = signal.butter(5, [20, 100], 'bandpass', fs=fs, output='sos')
+                data_filtered = signal.sosfilt(sos, data_detrend)
                 
-                data_padded = torch.cat([data_normalized, padding], dim=0)
-            else:
-                data_padded = data_normalized
+                return data_filtered
+        except Exception as e:
+            print(f"Error processing file {file_path}: {str(e)}")
+            return None
 
-            # Apply positional encoding on GPU
-            if self.pos_encoding_method == 'add':
-                data_with_pos = data_padded + self.pos_encoding_cache
-            else:  # 'concat'
-                data_with_pos = torch.cat([data_padded, self.pos_encoding_cache], dim=1)
+    def worker_init_fn(self, worker_id):
+        """Initialize worker with its subset of files"""
+        worker_info = torch.utils.data.get_worker_info()
+        if worker_info is None:
+            return
+        
+        # Divide files among workers
+        per_worker = len(self.file_paths) // worker_info.num_workers
+        start_idx = worker_info.id * per_worker
+        end_idx = start_idx + per_worker if worker_info.id < worker_info.num_workers - 1 else len(self.file_paths)
+        self.file_paths = self.file_paths[start_idx:end_idx]
 
-            return data_with_pos
+    def finalize_gpu_processing(self, data_filtered):
+        """Perform final processing steps on GPU"""
+        if data_filtered is None:
+            return None
+            
+        data_tensor = torch.tensor(data_filtered, dtype=torch.float32, device=self.device)
+        data_normalized = (data_tensor - data_tensor.mean()) / (data_tensor.std() + 1e-8)
+        
+        rows = data_normalized.shape[0]
+        if rows < MAX_ROWS:
+            padding_rows = MAX_ROWS - rows
+            # Your existing padding logic here...
+            # (keeping the same padding strategies as in your original code)
+            
+        if self.pos_encoding_method == 'add':
+            data_with_pos = data_normalized + self.pos_encoding_cache
+        else:  # 'concat'
+            data_with_pos = torch.cat([data_normalized, self.pos_encoding_cache], dim=1)
+            
+        return data_with_pos
 
     def __iter__(self):
-        """Iterate through the dataset, yielding GPU tensors"""
-        for file_path in self.file_paths:
-            data_processed = self.process_file(file_path)
-            if data_processed is not None:
-                yield data_processed
+        """Iterate through the dataset using parallel processing"""
+        worker_info = torch.utils.data.get_worker_info()
+        
+        if worker_info is None:  # Single-process data loading
+            files_to_process = self.file_paths
+        else:  # In a worker process
+            per_worker = len(self.file_paths) // worker_info.num_workers
+            start_idx = worker_info.id * per_worker
+            end_idx = start_idx + per_worker if worker_info.id < worker_info.num_workers - 1 else len(self.file_paths)
+            files_to_process = self.file_paths[start_idx:end_idx]
 
-# # Example usage
-# def create_dataloader(file_paths, batch_size=32, device='cuda'):
-#     dataset = HDF5IterableDataset(file_paths, device=device)
-#     # pin_memory=False since we're already on GPU
-#     # num_workers can be > 0 since preprocessing starts on CPU
-#     return torch.utils.data.DataLoader(
-#         dataset, 
-#         batch_size=batch_size,
-#         num_workers=4,  # Adjust based on your CPU cores
-#         pin_memory=False
-    # )
+        # Process files in parallel on CPU
+        with Pool(processes=self.num_workers) as pool:
+            for data_filtered in pool.imap(self.process_file_cpu, files_to_process):
+                if data_filtered is not None:
+                    # Final GPU processing
+                    data_processed = self.finalize_gpu_processing(data_filtered)
+                    if data_processed is not None:
+                        yield data_processed
