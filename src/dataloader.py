@@ -1,34 +1,37 @@
-# import torch
-# from torch.utils.data import IterableDataset
-# import h5py
-# import numpy as np
-# from scipy import signal
-# import os
+import torch
+import h5py
+import numpy as np
+from scipy import signal
+import os
+from torch.utils.data import IterableDataset
+from torch.multiprocessing import Pool, cpu_count
+from itertools import cycle
+from functools import partial
 
-# # Constants for data dimensions
-# MIN_ROWS = 1357
-# MAX_ROWS = 1387
-# REQUIRED_COLUMNS = 30000
+# Constants for data dimensions
+MIN_ROWS = 1357
+MAX_ROWS = 1387
+REQUIRED_COLUMNS = 30000
 
 
-# def generate_row_mask(batch_size, num_rows, mask_ratio=0.25):
-#     """
-#     Generate masks for each batch to indicate which rows should be masked.
+def generate_row_mask(batch_size, num_rows, mask_ratio=0.25):
+    """
+    Generate masks for each batch to indicate which rows should be masked.
 
-#     Args:
-#         batch_size (int): Number of samples in the batch
-#         num_rows (int): Number of rows in each sample
-#         mask_ratio (float): Proportion of rows to mask (default: 0.25 as per specs)
+    Args:
+        batch_size (int): Number of samples in the batch
+        num_rows (int): Number of rows in each sample
+        mask_ratio (float): Proportion of rows to mask (default: 0.25 as per specs)
 
-#     Returns:
-#         torch.Tensor: Boolean tensor of shape [batch_size, num_rows] where True indicates masked positions
-#     """
-#     row_mask = torch.zeros((batch_size, num_rows), dtype=torch.bool)
-#     for i in range(batch_size):
-#         num_masked = int(num_rows * mask_ratio)
-#         mask_indices = torch.randperm(num_rows)[:num_masked]
-#         row_mask[i, mask_indices] = True
-#     return row_mask
+    Returns:
+        torch.Tensor: Boolean tensor of shape [batch_size, num_rows] where True indicates masked positions
+    """
+    row_mask = torch.zeros((batch_size, num_rows), dtype=torch.bool)
+    for i in range(batch_size):
+        num_masked = int(num_rows * mask_ratio)
+        mask_indices = torch.randperm(num_rows)[:num_masked]
+        row_mask[i, mask_indices] = True
+    return row_mask
 
 
 # def add_positional_encoding(data, method='add'):
@@ -221,11 +224,6 @@
 #             if data_processed is not None:
 #                 yield data_processed
 
-# import torch
-# from torch.utils.data import IterableDataset
-# import h5py
-# import numpy as np
-# from scipy import signal
 
 # class HDF5IterableDataset(IterableDataset):
 #     def __init__(self, file_paths, padding_strategy='zero', pos_encoding_method='add', device='cuda'):
@@ -328,14 +326,6 @@
 #             if data_processed is not None:
 #                 yield data_processed
 
-import torch
-from torch.utils.data import IterableDataset, DataLoader
-import h5py
-import numpy as np
-from scipy import signal
-from torch.multiprocessing import Pool, cpu_count
-from itertools import cycle
-from functools import partial
 
 class HDF5IterableDataset(IterableDataset):
     def __init__(self, file_paths, padding_strategy='zero', pos_encoding_method='add', 
