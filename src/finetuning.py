@@ -28,7 +28,7 @@ param_grid = {
     'learning_rate': [1e-4, 1e-3],
     'mask_ratio': [0.25, 0.5],
     'padding': ['zero'],
-    'positional_encodings': ['add', 'concat'],
+    'positional_encodings': ['add'],
     'embedding_dim': [256, 512],
     'number_heads': [4, 8],
     'layers': [4, 6]
@@ -357,7 +357,7 @@ best_params = None
 dataset_cache = {}
 
 # loop over all parameter combinations
-for param_values in param_combinations:
+for param_values in param_combinations[8:]:  # Skip the first 8 combinations
     params = dict(zip(param_names, param_values))
 
     # create a unique key for the dataset cache based on padding and positional_encodings
