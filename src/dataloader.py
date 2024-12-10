@@ -236,7 +236,7 @@ class HDF5IterableDataset(IterableDataset):
             if self.labels_dict is not None:
                 filename = os.path.basename(file_path)
                 print(filename)
-                label = self.labels_dict.get(filename, 0)  # Default to 0 if not found
+                label = self.labels_dict.get(filename)  # Default to 0 if not found
                 print(label)
                 label_tensor = torch.tensor(label, dtype=torch.float32, device=self.device)
                 print(label_tensor)
@@ -288,7 +288,7 @@ dataset = HDF5IterableDataset(
     labels_dict=labels_dict,
     device='cuda'
 )
-dataloader = DataLoader(dataset, batch_size=2)
+dataloader = DataLoader(dataset, batch_size=4)
 
 # Simple test loop
 print("Testing dataloader outputs:")
