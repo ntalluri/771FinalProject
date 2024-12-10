@@ -7,6 +7,7 @@ from torch.utils.data import IterableDataset
 from torch.multiprocessing import Pool, cpu_count
 from itertools import cycle
 from functools import partial
+import pandas as pd
 
 # Constants for data dimensions
 MIN_ROWS = 1357
@@ -34,163 +35,47 @@ def generate_row_mask(batch_size, num_rows, mask_ratio=0.25):
     return row_mask
 
 
-# def add_positional_encoding(data, method='add'):
-#     """
-#     Add positional encoding to the data matrix using either addition or concatenation.
-
-#     The encoding uses sinusoidal functions to create unique position-based values,
-#     allowing the model to understand spatial relationships in the data.
-
-#     Args:
-#         data (np.ndarray): Input data matrix of shape [rows, cols]
-#         method (str): How to combine positional encoding with data:
-#             - 'add': Add encoding directly to data (preserves original dimensions)
-#             - 'concat': Concatenate encoding as new columns (doubles column dimension)
-
-#     Returns:
-#         np.ndarray: Data with positional encoding applied
-
-#     Note:
-#         Following the paper specs, we use sinusoidal encoding to provide
-#         spatial context while maintaining the ability to extrapolate to
-#         different sequence lengths.
-#     """
-#     rows, cols = data.shape
-#     position = np.arange(rows)[:, np.newaxis]
-#     div_term = np.exp(np.arange(0, cols, 2) * -(np.log(10000.0) / cols))
-
-#     # Create sinusoidal position encoding
-#     row_encoding = np.zeros((rows, cols))
-#     row_encoding[:, 0::2] = np.sin(position * div_term)
-#     row_encoding[:, 1::2] = np.cos(position * div_term)
-
-#     if method == 'add':
-#         # Add encoding directly to preserve original dimensions
-#         return data + row_encoding
-#     elif method == 'concat':
-#         # Concatenate encoding as additional features
-#         # This preserves the original data values but increases dimensionality
-#         return np.concatenate([data, row_encoding], axis=1)
-#     else:
-#         raise ValueError(f"Unknown positional encoding method: {method}")
-
-
-# def custom_padding(data, target_rows, strategy='zero'):
-#     """
-#     Pad the data matrix to reach target_rows using various strategies.
-#     Each strategy offers different benefits for maintaining data characteristics.
-
-#     Args:
-#         data (np.ndarray): Input data matrix
-#         target_rows (int): Desired number of rows after padding
-#         strategy (str): Padding strategy to use:
-#             - 'zero': Simple zero padding (baseline approach)
-#             - 'noise': Gaussian noise based on data statistics (maintains data distribution)
-#             - 'repeat': Repeats last row (maintains edge patterns)
-#             - 'mirror': Reflects last rows (maintains local patterns)
-
-#     Returns:
-#         np.ndarray: Padded data matrix with target_rows rows
-
-#     Note:
-#         As specified in the report, these strategies aim to better simulate
-#         real-world conditions and provide the model with different types
-#         of context for the padding regions.
-#     """
-#     rows, cols = data.shape
-
-#     if rows >= target_rows:
-#         return data
-
-#     padding_rows = target_rows - rows
-
-#     if strategy == 'zero':
-#         # Simple zero padding - baseline approach
-#         # Useful when we want to clearly distinguish padding from real data
-#         padding = np.zeros((padding_rows, cols))
-
-#     elif strategy == 'noise':
-#         # Gaussian noise padding based on data statistics
-#         # Maintains the statistical properties of the real data
-#         mean = data.mean()
-#         std = data.std()
-#         padding = np.random.normal(mean, std, (padding_rows, cols))
-
-#     elif strategy == 'repeat':
-#         # Repeat last row - useful when we expect continuation of patterns
-#         # Good for data where the last row represents a stable state
-#         padding = np.tile(data[-1:], (padding_rows, 1))
-
-#     elif strategy == 'mirror':
-#         # Mirror padding - maintains local patterns and continuity
-#         # Particularly useful for spatial data where local structure is important
-#         num_rows_to_mirror = min(padding_rows, rows)
-#         mirrored_rows = data[-num_rows_to_mirror:][::-1]
-#         if padding_rows > num_rows_to_mirror:
-#             # If we need more padding rows than available data rows,
-#             # fill the rest with the last mirrored row
-#             remaining_rows = padding_rows - num_rows_to_mirror
-#             padding = np.vstack([
-#                 mirrored_rows,
-#                 np.tile(mirrored_rows[-1:], (remaining_rows, 1))
-#             ])
-#         else:
-#             padding = mirrored_rows[:padding_rows]
-
-#     else:
-#         raise ValueError(f"Unknown padding strategy: {strategy}")
-
-#     return np.vstack([data, padding])
-
-# # inherits from IterableDataset, designed for loading data in a lazy fashion, processing each file one at a time.
 # class HDF5IterableDataset(IterableDataset):
-#     """
-#     Custom dataset for loading and preprocessing HDF5 DAS data files.
-#     Implements lazy loading and on-the-fly preprocessing to manage memory efficiently.
-
-#     Supports multiple root directories and nested directories containing HDF5 files,
-#     with the ability to exclude specific folders.
-#     """
-
-#     def __init__(self, file_paths, padding_strategy='zero', pos_encoding_method='add'):
+#     def __init__(self, file_paths, padding_strategy='zero', pos_encoding_method='add', device='cuda'):
 #         """
-#         Initialize the dataset with customizable preprocessing options.
-
+#         Initialize the dataset with GPU support.
+        
 #         Args:
-#             root_dirs (list or str): List of root directories or a single root directory
-#             exclude_dirs (list or set): List of folder names to exclude from processing
-#             padding_strategy (str): Strategy for padding rows ('zero', 'noise', 'repeat', 'mirror')
-#             pos_encoding_method (str): Method for positional encoding ('add', 'concat')
+#             file_paths (list): List of HDF5 file paths
+#             padding_strategy (str): Strategy for padding rows
+#             pos_encoding_method (str): Method for positional encoding
+#             device (str): Device to process data on ('cuda' or 'cpu')
 #         """
 #         self.file_paths = file_paths
 #         if not self.file_paths:
-#             raise ValueError(f"No valid HDF5 files found in the provided directories.")
+#             raise ValueError("No valid HDF5 files found in the provided directories.")
 #         self.padding_strategy = padding_strategy
 #         self.pos_encoding_method = pos_encoding_method
-
-#     def __len__(self):
-#         return len(self.file_paths)
+#         self.device = device
+        
+#         # Pre-compute position encoding matrices for GPU
+#         self.pos_encoding_cache = self._prepare_pos_encoding()
+    
+#     def _prepare_pos_encoding(self):
+#         """Precompute position encoding matrices and store them on GPU"""
+#         rows, cols = MAX_ROWS, REQUIRED_COLUMNS
+#         position = np.arange(rows)[:, np.newaxis]
+#         div_term = np.exp(np.arange(0, cols, 2) * -(np.log(10000.0) / cols))
+        
+#         row_encoding = np.zeros((rows, cols))
+#         row_encoding[:, 0::2] = np.sin(position * div_term)
+#         row_encoding[:, 1::2] = np.cos(position * div_term)
+        
+#         return torch.tensor(row_encoding, dtype=torch.float32, device=self.device)
 
 #     def process_file(self, file_path):
 #         """
-#         Process a single HDF5 file, applying all necessary transformations.
-
-#         Implements the preprocessing pipeline specified in the report:
-#         1. Load raw data
-#         2. Apply detrending
-#         3. Apply bandpass filtering
-#         4. Normalize data
-#         5. Apply padding
-#         6. Add positional encoding
-
-#         Args:
-#             file_path (str): Path to HDF5 file
-
-#         Returns:
-#             torch.Tensor: Processed data tensor, or None if file is invalid
+#         Process a single HDF5 file with GPU acceleration where beneficial.
+#         CPU is used for I/O and initial signal processing, GPU for later stages.
 #         """
 #         with h5py.File(file_path, 'r') as file:
 #             fs = file['Acquisition/Raw[0]'].attrs["OutputDataRate"]
+#             # Keep initial load on CPU
 #             raw_data_np = file['Acquisition/Raw[0]/RawData'][:]
 
 #             rows, cols = raw_data_np.shape
@@ -198,45 +83,73 @@ def generate_row_mask(batch_size, num_rows, mask_ratio=0.25):
 #                 print(f"Ignored file due to size: {file_path} (Shape: {raw_data_np.shape})")
 #                 return None
 
-#             # Apply preprocessing transformations as specified in the report
+#             # Perform CPU-bound operations first
 #             data_detrend = signal.detrend(raw_data_np, type='linear')
 #             sos = signal.butter(5, [20, 100], 'bandpass', fs=fs, output='sos')
 #             data_filtered = signal.sosfilt(sos, data_detrend)
+            
+#             # Convert to tensor and move to GPU for remaining operations
+#             data_tensor = torch.tensor(data_filtered, dtype=torch.float32, device=self.device)
+            
+#             # Normalize on GPU
+#             data_normalized = (data_tensor - data_tensor.mean()) / (data_tensor.std() + 1e-8)
+            
+#             # Padding on GPU
+#             if rows < MAX_ROWS:
+#                 padding_rows = MAX_ROWS - rows
+#                 if self.padding_strategy == 'zero':
+#                     padding = torch.zeros((padding_rows, cols), device=self.device)
+#                 elif self.padding_strategy == 'noise':
+#                     mean = data_normalized.mean()
+#                     std = data_normalized.std()
+#                     padding = torch.normal(mean, std, (padding_rows, cols), device=self.device)
+#                 elif self.padding_strategy == 'repeat':
+#                     padding = data_normalized[-1:].repeat(padding_rows, 1)
+#                 elif self.padding_strategy == 'mirror':
+#                     num_rows_to_mirror = min(padding_rows, rows)
+#                     mirrored_rows = data_normalized[-num_rows_to_mirror:].flip(0)
+#                     if padding_rows > num_rows_to_mirror:
+#                         remaining_rows = padding_rows - num_rows_to_mirror
+#                         padding = torch.cat([
+#                             mirrored_rows,
+#                             mirrored_rows[-1:].repeat(remaining_rows, 1)
+#                         ])
+#                     else:
+#                         padding = mirrored_rows[:padding_rows]
+                
+#                 data_padded = torch.cat([data_normalized, padding], dim=0)
+#             else:
+#                 data_padded = data_normalized
 
-#             # Normalize the filtered data
-#             data_normalized = (data_filtered - np.mean(data_filtered)) / (np.std(data_filtered) + 1e-8)
+#             # Apply positional encoding on GPU
+#             if self.pos_encoding_method == 'add':
+#                 data_with_pos = data_padded + self.pos_encoding_cache
+#             else:  # 'concat'
+#                 data_with_pos = torch.cat([data_padded, self.pos_encoding_cache], dim=1)
 
-#             # Apply padding with selected strategy
-#             data_padded = custom_padding(data_normalized, MAX_ROWS, strategy=self.padding_strategy)
-
-#             # Apply positional encoding with selected method
-#             data_with_pos_encoding = add_positional_encoding(data_padded, method=self.pos_encoding_method)
-
-#             return torch.tensor(data_with_pos_encoding, dtype=torch.float32)
+#             return data_with_pos
 
 #     def __iter__(self):
-#         """
-#         Iterate through the dataset, yielding processed tensors.
-#         Implements lazy loading as specified in the report.
-#         """
+#         """Iterate through the dataset, yielding GPU tensors"""
 #         for file_path in self.file_paths:
 #             data_processed = self.process_file(file_path)
 #             if data_processed is not None:
 #                 yield data_processed
 
-
 class HDF5IterableDataset(IterableDataset):
-    def __init__(self, file_paths, padding_strategy='zero', pos_encoding_method='add', device='cuda'):
+    def __init__(self, file_paths, labels_dict=None, padding_strategy='zero', pos_encoding_method='add', device='cuda'):
         """
-        Initialize the dataset with GPU support.
+        Initialize the dataset with GPU support and optional labels.
         
         Args:
             file_paths (list): List of HDF5 file paths
+            labels_dict (dict, optional): Dictionary mapping filenames to labels (0 or 1)
             padding_strategy (str): Strategy for padding rows
             pos_encoding_method (str): Method for positional encoding
             device (str): Device to process data on ('cuda' or 'cpu')
         """
         self.file_paths = file_paths
+        self.labels_dict = labels_dict
         if not self.file_paths:
             raise ValueError("No valid HDF5 files found in the provided directories.")
         self.padding_strategy = padding_strategy
@@ -262,6 +175,7 @@ class HDF5IterableDataset(IterableDataset):
         """
         Process a single HDF5 file with GPU acceleration where beneficial.
         CPU is used for I/O and initial signal processing, GPU for later stages.
+        Returns both processed data and label if labels_dict is provided.
         """
         with h5py.File(file_path, 'r') as file:
             fs = file['Acquisition/Raw[0]'].attrs["OutputDataRate"]
@@ -317,11 +231,67 @@ class HDF5IterableDataset(IterableDataset):
             else:  # 'concat'
                 data_with_pos = torch.cat([data_padded, self.pos_encoding_cache], dim=1)
 
+            # Get label if labels_dict is provided
+            if self.labels_dict is not None:
+                filename = os.path.basename(file_path)
+                label = self.labels_dict.get(filename, 0)  # Default to 0 if not found
+                label_tensor = torch.tensor(label, dtype=torch.float32, device=self.device)
+                return data_with_pos, label_tensor
+            
             return data_with_pos
 
     def __iter__(self):
-        """Iterate through the dataset, yielding GPU tensors"""
+        """
+        Iterate through the dataset, yielding processed tensors and labels if available.
+        """
         for file_path in self.file_paths:
-            data_processed = self.process_file(file_path)
-            if data_processed is not None:
-                yield data_processed
+            processed = self.process_file(file_path)
+            if processed is not None:
+                yield processed
+
+####### test code ##########
+labels_df = pd.read_csv('labeled_filenames.csv', sep=',', header=0)  # Adjust filename as needed
+labels_dict = dict(zip(labels_df['Filename'], labels_df['Label']))
+
+def get_all_file_paths(folder_paths):
+    all_file_paths = []
+    for subdir_path in folder_paths:
+        # list files ending with '.h5' in the current subdirectory
+        try:
+            files_in_subdir = os.listdir(subdir_path)
+        except FileNotFoundError:
+            print(f"Subdirectory not found: {subdir_path}")
+            continue
+
+        h5_files = [
+            os.path.join(subdir_path, f)
+            for f in files_in_subdir
+            if os.path.isfile(os.path.join(subdir_path, f)) and f.endswith('.h5')
+        ]
+        all_file_paths.extend(h5_files)
+    return all_file_paths
+
+folder_paths = []
+with open('labeled_folders.txt', 'r') as file:
+    folder_paths = file.read().splitlines()
+
+# get all the H5 files 
+all_file_paths = get_all_file_paths(folder_paths)
+
+# Create dataset and dataloader
+dataset = HDF5IterableDataset(
+    file_paths=all_file_paths,
+    labels_dict=labels_dict,
+    device='cuda'
+)
+dataloader = DataLoader(dataset, batch_size=2)
+
+# Simple test loop
+print("Testing dataloader outputs:")
+for i, (data, labels) in enumerate(dataloader):
+    print(f"\nBatch {i}:")
+    print(f"Data shape: {data.shape}")
+    print(f"Labels: {labels}")
+    
+    if i >= 2:  # Just look at first few batches
+        break
