@@ -47,12 +47,12 @@ class EarlyStopping:
             self.save_checkpoint(loss, model)
             self.counter = 0
 
-    def save_checkpoint(self, loss, model):
-        '''Saves model when loss decreases.'''
+    def save_checkpoint(self, val_loss, model):
+        '''Saves the entire model when validation loss decreases.'''
         if self.verbose:
-            print(f'Validation loss decreased ({self.best_loss:.6f} --> {loss:.6f}).  Saving model ...')
-        torch.save(model.state_dict(), self.path)
-        self.best_loss = loss
+            print(f'Validation loss decreased ({self.best_loss:.6f} --> {val_loss:.6f}).  Saving model ...')
+        torch.save(model.state_dict(), self.save_path)
+        self.best_loss = val_loss
 
 def gather_all_file_paths(root_dirs, exclude_dirs=None):
     """
@@ -401,30 +401,48 @@ for epoch in range(num_epochs):
         print("Early stopping triggered. Stopping training.")
         break
 
-# Load the best model saved during training
-model.load_state_dict(torch.load('best_model.pt'))
+# After training is complete, load the best saved model
+print("Training complete. Loading the best saved model for testing.")
 
-model.eval()
+# Initialize a new MAEModel instance (same architecture)
+best_model = MAEModel(
+    input_dim=REQUIRED_COLUMNS,
+    embed_dim=embedding_dim,
+    num_heads=number_heads,
+    depth=layers
+)
+
+# Handle DataParallel wrapping
+if torch.cuda.device_count() >= 1:
+    best_model = nn.DataParallel(best_model)
+
+best_model.to(device)
+
+# Load the saved state_dict
+best_model_path = 'best_model.pt'
+best_model.load_state_dict(torch.load(best_model_path, map_location=device))
+print("Best model loaded successfully.")
+
+# Final Evaluation on Test Set using the loaded best MAE model
+best_model.eval()
 test_loss = 0.0
-test_corr =0.0
+test_corr = 0.0
 test_batches = 0
 with torch.no_grad():
-        # generate row masks for the batch
-        # forward pass
     for batch_data in test_loader:
         batch_data = batch_data.to(device)
         row_mask = generate_row_mask(batch_data.size(0), MAX_ROWS, mask_ratio).to(device)
-        reconstructed = model(batch_data, row_mask)
+        reconstructed = best_model(batch_data, row_mask)
         # reconstructed.to(device)
         
-        # compute loss
+        # Compute loss
         loss = criterion(
             reconstructed[row_mask.unsqueeze(-1).expand_as(reconstructed)],
             batch_data[row_mask.unsqueeze(-1).expand_as(batch_data)]
         )
         test_loss += loss.item()
         
-        # compute pearson correlation
+        # Compute Pearson correlation
         corr = compute_batch_pearson_correlation(reconstructed, batch_data, row_mask)
         test_corr += corr
         
@@ -434,13 +452,38 @@ test_loss /= max(test_batches, 1)
 test_corr /= max(test_batches, 1)
 print(f"Final Test Loss: {test_loss:.4f} Pearson Correlation: {test_corr:.4f}")
 
-# Log final test loss to TensorBoard
+# Log final test metrics to TensorBoard
 writer.add_scalar('Loss/Test', test_loss, epoch + 1)
 writer.add_scalar('Correlation/Test', test_corr, epoch + 1)
 
-model_save_path = "trained_mae_model.pt"
-torch.save(model, model_save_path)
-print(f"Model saved to {model_save_path}")
+# Extract the encoder from the loaded best model and save its state_dict separately
+print("Extracting the encoder from the best model.")
+
+# Access the encoder
+if isinstance(best_model, nn.DataParallel):
+    encoder = best_model.module.encoder
+else:
+    encoder = best_model.encoder
+
+# Initialize a new encoder instance (same architecture)
+encoder_model = MAEModel(
+    input_dim=REQUIRED_COLUMNS,
+    embed_dim=embedding_dim,
+    num_heads=number_heads,
+    depth=layers
+).encoder
+
+encoder_model.to(device)
+
+# Load the encoder's state_dict from the best model
+encoder_model.load_state_dict(encoder.state_dict())
+encoder_model.eval()
+print("Encoder extracted successfully.")
+
+# Save the encoder's state_dict
+encoder_save_path = "trained_encoder_state_dict.pt"
+torch.save(encoder_model.state_dict(), encoder_save_path)
+print(f"Trained encoder's state_dict saved to {encoder_save_path}")
 
 # Close the TensorBoard writer
 writer.close()
