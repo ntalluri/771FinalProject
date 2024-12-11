@@ -235,11 +235,8 @@ class HDF5IterableDataset(IterableDataset):
             # Get label if labels_dict is provided
             if self.labels_dict is not None:
                 filename = os.path.basename(file_path)
-                print(filename)
                 label = self.labels_dict.get(filename)  # Default to 0 if not found
-                print(label)
                 label_tensor = torch.tensor(label, dtype=torch.float32, device=self.device)
-                print(label_tensor)
                 return data_with_pos, label_tensor
             
             return data_with_pos
@@ -252,50 +249,3 @@ class HDF5IterableDataset(IterableDataset):
             processed = self.process_file(file_path)
             if processed is not None:
                 yield processed
-
-####### test code ##########
-labels_df = pd.read_csv('labeled_filenames.csv', sep=',', header=0)  # Adjust filename as needed
-labels_dict = dict(zip(labels_df['Filename'], labels_df['Label']))
-
-def get_all_file_paths(folder_paths):
-    all_file_paths = []
-    for subdir_path in folder_paths:
-        # list files ending with '.h5' in the current subdirectory
-        try:
-            files_in_subdir = os.listdir(subdir_path)
-        except FileNotFoundError:
-            print(f"Subdirectory not found: {subdir_path}")
-            continue
-
-        h5_files = [
-            os.path.join(subdir_path, f)
-            for f in files_in_subdir
-            if os.path.isfile(os.path.join(subdir_path, f)) and f.endswith('.h5')
-        ]
-        all_file_paths.extend(h5_files)
-    return all_file_paths
-
-folder_paths = []
-with open('labeled_folders.txt', 'r') as file:
-    folder_paths = file.read().splitlines()
-
-# get all the H5 files 
-all_file_paths = get_all_file_paths(folder_paths)
-
-# Create dataset and dataloader
-dataset = HDF5IterableDataset(
-    file_paths=all_file_paths,
-    labels_dict=labels_dict,
-    device='cuda'
-)
-dataloader = DataLoader(dataset, batch_size=4)
-
-# Simple test loop
-print("Testing dataloader outputs:")
-for i, (data, labels) in enumerate(dataloader):
-    print(f"\nBatch {i}:")
-    print(f"Data shape: {data.shape}")
-    print(f"Labels: {labels}")
-    
-    if i >= 2:  # Just look at first few batches
-        break
