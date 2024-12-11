@@ -79,7 +79,10 @@ class BinaryClassifier(nn.Module):
         )
     
     def forward(self, x):
-        encoded = self.encoder(x)
+        if isinstance(self.encoder, nn.DataParallel):
+            encoded = self.encoder.module(x)
+        else:
+            encoded = self.encoder(x)
         return self.classifier(encoded).squeeze()
 
 def train_classifier(model, train_loader, val_loader, num_epochs=10):
@@ -206,6 +209,10 @@ encoder_model = MAEModel(
 
 # load the state dict
 encoder_model.load_state_dict(encoder_state_dict)
+
+if torch.cuda.device_count() >= 1:
+    encoder_model = nn.DataParallel(encoder_model)
+
 encoder_model.to(device)
 
 # TODO: test the encoder; then delete this code
@@ -216,10 +223,19 @@ for data, labels in train_loader:
     print(f"Encoded shape: {encoded.shape}")
     break
 
-model = BinaryClassifier(encoder_model, freeze_encoder=True).to(device)
-
+model = BinaryClassifier(encoder_model, freeze_encoder=True)
+if torch.cuda.device_count() >= 1:
+    print(f"Using {torch.cuda.device_count()} GPUs!")
+    model = nn.DataParallel(model)
+else:
+    print("Using single GPU or CPU")
+model.to(device)
 trained_model = train_classifier(model, train_loader, val_loader, num_epochs=10)
-torch.save(trained_model.state_dict(), 'binary_classifier.pt')
+
+if isinstance(trained_model, nn.DataParallel):
+    torch.save(trained_model.module.state_dict(), 'binary_classifier.pt')
+else:
+    torch.save(trained_model.state_dict(), 'binary_classifier.pt')
 
 # Test final model
 model.eval()
