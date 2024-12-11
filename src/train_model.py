@@ -7,6 +7,7 @@ from dataloader import HDF5IterableDataset, generate_row_mask
 from MAE import MAEModel
 import torch.nn as nn
 import random 
+import datetime
 
 class EarlyStopping:
     """
@@ -247,15 +248,15 @@ folder_paths = [
 ]
 
 # tunable parameters
-batch = 4
+batch = 6
 num_epochs = 10
-learning_rate = 1e-4
+learning_rate = 0.0001
 mask_ratio = 0.25
 padding = 'zero'
 positional_encodings = 'add'
 embedding_dim = 512
 number_heads = 8
-layers = 6
+layers = 4
 
 # not tunable parameters 
 MAX_ROWS = 1387
@@ -309,11 +310,29 @@ train_loader = DataLoader(train_dataset, batch_size=batch, shuffle=True)
 val_loader = DataLoader(val_dataset, batch_size=batch, shuffle=True)
 test_loader = DataLoader(test_dataset, batch_size=batch, shuffle=True)
 
+# Determine the directory where this script is located
+script_dir = os.path.dirname(os.path.abspath(__file__))
+
+# Navigate to the parent directory (project root)
+project_dir = os.path.abspath(os.path.join(script_dir, os.pardir))
+
+# Define the logs directory path
+logs_dir = os.path.join(project_dir, 'logs')
+
+# Create the logs directory if it doesn't exist
+os.makedirs(logs_dir, exist_ok=True)
+
+# Generate a unique subdirectory name using the current timestamp
+timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+unique_log_dir = os.path.join(logs_dir, f"run_{timestamp}")
+
+# Initialize the TensorBoard SummaryWriter with the unique log directory
+writer = SummaryWriter(log_dir=unique_log_dir)
+
+print(f"TensorBoard logs will be saved to: {unique_log_dir}")
+
 # Initialize EarlyStopping
 early_stopping = EarlyStopping(patience=3, verbose=True, delta=0.0, path='best_model.pt')
-
-# Initialize TensorBoard SummaryWriter
-writer = SummaryWriter(log_dir='runs/experiment_1')  # You can change the log_dir as needed
 
 for epoch in range(num_epochs):
     print(f"Epoch {epoch + 1}")
