@@ -63,7 +63,7 @@ class EarlyStopping:
         '''Saves the entire model when validation loss decreases.'''
         if self.verbose:
             print(f'Validation loss decreased ({self.best_loss:.6f} --> {val_loss:.6f}).  Saving model ...')
-        torch.save(model.state_dict(), self.save_path)
+        torch.save(model.state_dict(), self.path)
         self.best_loss = val_loss
 
 def gather_all_file_paths(root_dirs, exclude_dirs=None):
@@ -269,7 +269,7 @@ embedding_dim = 512
 number_heads = 8
 layers = 4
 
-file_prop = 0.25
+file_prop = 0.001
 
 # not tunable parameters 
 MAX_ROWS = 1387
@@ -323,9 +323,9 @@ test_dataset = HDF5IterableDataset(test_file_paths, padding_strategy = padding, 
 # Create data loaders
 # TODO: is this loading all the data prior to training? 
 # TODO: could we load per batch instead. A dataloader per batch?
-train_loader = DataLoader(train_dataset, batch_size=batch, shuffle=True)
-val_loader = DataLoader(val_dataset, batch_size=batch, shuffle=True)
-test_loader = DataLoader(test_dataset, batch_size=batch, shuffle=True)
+train_loader = DataLoader(train_dataset, batch_size=batch)
+val_loader = DataLoader(val_dataset, batch_size=batch)
+test_loader = DataLoader(test_dataset, batch_size=batch)
 
 # Determine the directory where this script is located
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -340,7 +340,7 @@ logs_dir = os.path.join(project_dir, 'logs')
 os.makedirs(logs_dir, exist_ok=True)
 
 # Generate a unique subdirectory name using the current timestamp
-timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 unique_log_dir = os.path.join(logs_dir, f"run_{timestamp}")
 
 # Initialize the TensorBoard SummaryWriter with the unique log directory
@@ -385,8 +385,8 @@ for epoch in range(num_epochs):
             
         num_batches += 1
 
-        # if batch_idx % 10 == 0:
-        #     print(f"  Batch {batch_idx}, Loss: {loss.item():.4f}")
+        if batch_idx % 10 == 0:
+            print(f"  Batch {batch_idx}, Loss: {loss.item():.4f}")
 
     train_loss /= max(num_batches, 1)
     train_corr /= max(num_batches, 1)

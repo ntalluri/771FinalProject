@@ -9,7 +9,7 @@ import torch.multiprocessing as mp
 import torch.distributed as dist
 from sklearn.model_selection import train_test_split
 from dataloader import HDF5IterableDataset, generate_row_mask
-from MAE import MAEModel
+from MAE import MAEModel, Encoder
 import random
 import datetime
 import argparse
@@ -18,12 +18,12 @@ class EarlyStopping:
     """
     Early stops the training if the monitored metric does not improve after a given patience.
     """
-    def __init__(self, patience=3, verbose=False, delta=0.0, path='best_model.pt'):
+    def __init__(self, patience=3, verbose=False, delta=0.0, path='best_model.pt', rank=0):
         self.patience = patience
         self.verbose = verbose
         self.delta = delta
         self.path = path
-
+        self.rank = rank  # Added rank
         self.counter = 0
         self.best_score = None
         self.early_stop = False
@@ -37,7 +37,7 @@ class EarlyStopping:
             self.save_checkpoint(loss, model, optimizer, scheduler)
         elif score < self.best_score + self.delta:
             self.counter += 1
-            if self.verbose:
+            if self.verbose and self.rank == 0:
                 print(f'EarlyStopping counter: {self.counter} out of {self.patience}')
             if self.counter >= self.patience:
                 self.early_stop = True
@@ -47,17 +47,12 @@ class EarlyStopping:
             self.counter = 0
 
     def save_checkpoint(self, val_loss, model, optimizer, scheduler=None):
-        '''Saves the entire model when validation loss decreases.'''
-        if self.verbose:
-            print(f'Validation loss decreased ({self.best_loss:.6f} --> {val_loss:.6f}).  Saving model ...')
-        state = {
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-        }
-        if scheduler:
-            state['scheduler_state_dict'] = scheduler.state_dict()
-        torch.save(state, self.path)
-        self.best_loss = val_loss
+        '''Saves the model's state_dict when validation loss decreases.'''
+        if self.rank == 0:
+            if self.verbose:
+                print(f'Validation loss decreased ({self.best_loss:.6f} --> {val_loss:.6f}).  Saving model ...')
+            torch.save(model.module.state_dict(), self.path)  # Save only the model's state_dict
+            self.best_loss = val_loss
 
 def gather_all_file_paths(root_dirs, exclude_dirs=None):
     """
@@ -138,7 +133,8 @@ def setup_distributed(rank, world_size, backend='nccl'):
     dist.init_process_group(backend, rank=rank, world_size=world_size)
 
 def cleanup_distributed():
-    dist.destroy_process_group()
+    if dist.is_initialized():
+        dist.destroy_process_group()
 
 def save_encoder(best_model, device, save_path="trained_encoder_state_dict.pt"):
     print("Extracting the encoder from the best model.")
@@ -148,15 +144,15 @@ def save_encoder(best_model, device, save_path="trained_encoder_state_dict.pt"):
     else:
         encoder = best_model.encoder
 
-    # Initialize a new encoder instance (same architecture)
-    encoder_model = MAEModel(
-        input_dim=best_model.module.input_dim if isinstance(best_model, nn.parallel.DistributedDataParallel) else best_model.input_dim,
-        embed_dim=best_model.module.embed_dim if isinstance(best_model, nn.parallel.DistributedDataParallel) else best_model.embed_dim,
-        num_heads=best_model.module.num_heads if isinstance(best_model, nn.parallel.DistributedDataParallel) else best_model.num_heads,
-        depth=best_model.module.depth if isinstance(best_model, nn.parallel.DistributedDataParallel) else best_model.depth
+    # Initialize a new Encoder instance with the same architecture
+    encoder_model = Encoder(
+        input_dim=encoder.embedding.in_features,
+        embed_dim=encoder.embedding.out_features,
+        num_heads=encoder.transformer_encoder.layers[0].nhead,
+        depth=len(encoder.transformer_encoder.layers)
     ).to(device)
 
-    # Load the encoder's state_dict from the best model
+    # Load the encoder's state_dict into the encoder_model
     encoder_model.load_state_dict(encoder.state_dict())
     encoder_model.eval()
     print("Encoder extracted successfully.")
@@ -164,6 +160,9 @@ def save_encoder(best_model, device, save_path="trained_encoder_state_dict.pt"):
     # Save the encoder's state_dict
     torch.save(encoder_model.state_dict(), save_path)
     print(f"Trained encoder's state_dict saved to {save_path}")
+
+
+
 
 # def train_model(rank, world_size, args):
 #     """
@@ -414,300 +413,316 @@ def save_encoder(best_model, device, save_path="trained_encoder_state_dict.pt"):
 
 #     cleanup_distributed()
 
+import signal
+import sys
+
+def signal_handler(signum, frame):
+    print(f"Process received signal {signum}. Cleaning up.")
+    cleanup_distributed()
+    sys.exit(0)
+
 def train_model(rank, world_size, args):
-    """
-    Distributed training function.
-    """
-    setup_distributed(rank, world_size)
-    torch.manual_seed(42)
-    random.seed(42)
-
-    device = torch.device(f'cuda:{rank}' if torch.cuda.is_available() else 'cpu')
-
-    # Gather all file paths
-    all_file_paths = gather_all_file_paths(args.root_dirs, exclude_dirs=args.exclude_dirs)
-
-    # Shuffle and split the file paths
-    random.shuffle(all_file_paths)
-    len_paths = len(all_file_paths)
-    num_keep = int(len_paths * args.file_prop)
-    all_file_paths = all_file_paths[:num_keep]
-
-    train_ratio = 0.7
-    val_ratio = 0.15
-    test_ratio = 0.15
-    total_files = len(all_file_paths)
-    train_end = int(train_ratio * total_files)
-    val_end = train_end + int(val_ratio * total_files)
-    train_file_paths = all_file_paths[:train_end]
-    val_file_paths = all_file_paths[train_end:val_end]
-    test_file_paths = all_file_paths[val_end:]
-
-    if rank == 0:
-        print(f"Total files: {total_files}")
-        print(f"Training files: {len(train_file_paths)}")
-        print(f"Validation files: {len(val_file_paths)}")
-        print(f"Testing files: {len(test_file_paths)}")
-
-    # Optionally, if you have labels, prepare labels_dict
-    labels_dict = None  # Replace with your labels dictionary if applicable
-
-    # Create sharded datasets
-    train_dataset = HDF5IterableDataset(
-        train_file_paths,
-        labels_dict=labels_dict,
-        padding_strategy=args.padding,
-        pos_encoding_method=args.pos_encoding,
-        rank=rank,
-        world_size=world_size
-    )
-    val_dataset = HDF5IterableDataset(
-        val_file_paths,
-        labels_dict=labels_dict,
-        padding_strategy=args.padding,
-        pos_encoding_method=args.pos_encoding,
-        rank=rank,
-        world_size=world_size
-    )
-    test_dataset = HDF5IterableDataset(
-        test_file_paths,
-        labels_dict=labels_dict,
-        padding_strategy=args.padding,
-        pos_encoding_method=args.pos_encoding,
-        rank=rank,
-        world_size=world_size
-    )
-
-    # Create dataloaders with pin_memory=True
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=args.batch_size,
-        shuffle=False,  # Shuffling is handled within the dataset if needed
-        num_workers=4,
-        pin_memory=True  # Enable pin_memory since data is on CPU
-    )
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=4,
-        pin_memory=True
-    )
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=4,
-        pin_memory=True
-    )
-
-    # Initialize the model
-    model = MAEModel(
-        input_dim=args.required_columns,
-        embed_dim=args.embedding_dim,
-        num_heads=args.number_heads,
-        depth=args.layers
-    ).to(device)
-
-    # Wrap the model with DistributedDataParallel
-    model = nn.parallel.DistributedDataParallel(model, device_ids=[rank] if torch.cuda.is_available() else None)
-
-    # Define loss and optimizer
-    criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
-    scheduler = None  # Add scheduler if needed
-
-    # Initialize EarlyStopping
-    early_stopping = EarlyStopping(patience=args.patience, verbose=True, delta=args.delta, path='best_model.pt')
-
-    # Setup TensorBoard
-    if rank == 0:
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        project_dir = os.path.abspath(os.path.join(script_dir, os.pardir))
-        logs_dir = os.path.join(project_dir, 'logs')
-        os.makedirs(logs_dir, exist_ok=True)
-        timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        unique_log_dir = os.path.join(logs_dir, f"run_{timestamp}")
-        writer = SummaryWriter(log_dir=unique_log_dir)
-        print(f"TensorBoard logs will be saved to: {unique_log_dir}")
-    else:
-        writer = None
-
-    for epoch in range(args.num_epochs):
-        model.train()
-        train_loss = 0.0
-        train_corr = 0.0
-        num_batches = 0
-
-        for batch_idx, batch_data in enumerate(train_loader):
-            if labels_dict:
-                data, labels = batch_data
-                labels = labels.to(device)  # Move labels to GPU
-            else:
-                data = batch_data
-
-            data = data.to(device)  # Move data to GPU
-
-            optimizer.zero_grad()
-
-            # Generate row masks for the batch
-            row_mask = generate_row_mask(data.size(0), args.max_rows, args.mask_ratio).to(device)
-            reconstructed = model(data, row_mask)
-
-            # Compute loss
-            if labels_dict:
-                # If you have labels, adjust the loss computation accordingly
-                loss = criterion(reconstructed, labels)
-            else:
-                loss = criterion(
-                    reconstructed[row_mask.unsqueeze(-1).expand_as(reconstructed)],
-                    data[row_mask.unsqueeze(-1).expand_as(data)]
-                )
-
-            loss.backward()
-            optimizer.step()
-            train_loss += loss.item()
-
-            # Compute Pearson correlation
-            corr = compute_batch_pearson_correlation(reconstructed, data, row_mask)
-            train_corr += corr
-
-            num_batches += 1
-
-            if batch_idx % 10 == 0 and rank == 0:
-                print(f"Epoch {epoch + 1}, Batch {batch_idx}, Loss: {loss.item():.4f}")
-
-        # Reduce loss and correlation across all processes
-        train_loss_tensor = torch.tensor(train_loss).to(device)
-        train_corr_tensor = torch.tensor(train_corr).to(device)
-        dist.reduce(train_loss_tensor, 0, op=dist.ReduceOp.SUM)
-        dist.reduce(train_corr_tensor, 0, op=dist.ReduceOp.SUM)
-
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    try:
+        setup_distributed(rank, world_size)
+        torch.manual_seed(42)
+        random.seed(42)
+    
+        device = torch.device(f'cuda:{rank}' if torch.cuda.is_available() else 'cpu')
+    
+        # Gather all file paths
+        all_file_paths = gather_all_file_paths(args.root_dirs, exclude_dirs=args.exclude_dirs)
+    
+        # Shuffle and split the file paths
+        random.shuffle(all_file_paths)
+        len_paths = len(all_file_paths)
+        num_keep = int(len_paths * args.file_prop)
+        all_file_paths = all_file_paths[:num_keep]
+    
+        train_ratio = 0.7
+        val_ratio = 0.15
+        test_ratio = 0.15
+        total_files = len(all_file_paths)
+        train_end = int(train_ratio * total_files)
+        val_end = train_end + int(val_ratio * total_files)
+        train_file_paths = all_file_paths[:train_end]
+        val_file_paths = all_file_paths[train_end:val_end]
+        test_file_paths = all_file_paths[val_end:]
+    
         if rank == 0:
-            avg_train_loss = train_loss_tensor.item() / world_size / num_batches
-            avg_train_corr = train_corr_tensor.item() / world_size / num_batches
-            print(f"Epoch {epoch + 1} Training Loss: {avg_train_loss:.4f} Pearson Correlation: {avg_train_corr:.4f}")
-
-            # Log training metrics
-            if writer:
-                writer.add_scalar('Loss/Train', avg_train_loss, epoch + 1)
-                writer.add_scalar('Correlation/Train', avg_train_corr, epoch + 1)
-
-        # Validation
-        model.eval()
-        val_loss = 0.0
-        val_corr = 0.0
-        val_batches = 0
-
-        with torch.no_grad():
-            for batch_data in val_loader:
+            print(f"Total files: {total_files}")
+            print(f"Training files: {len(train_file_paths)}")
+            print(f"Validation files: {len(val_file_paths)}")
+            print(f"Testing files: {len(test_file_paths)}")
+    
+        # Optionally, if you have labels, prepare labels_dict
+        labels_dict = None  # Replace with your labels dictionary if applicable
+    
+        # Create sharded datasets
+        train_dataset = HDF5IterableDataset(
+            train_file_paths,
+            labels_dict=labels_dict,
+            padding_strategy=args.padding,
+            pos_encoding_method=args.pos_encoding,
+            rank=rank,
+            world_size=world_size
+        )
+        val_dataset = HDF5IterableDataset(
+            val_file_paths,
+            labels_dict=labels_dict,
+            padding_strategy=args.padding,
+            pos_encoding_method=args.pos_encoding,
+            rank=rank,
+            world_size=world_size
+        )
+        test_dataset = HDF5IterableDataset(
+            test_file_paths,
+            labels_dict=labels_dict,
+            padding_strategy=args.padding,
+            pos_encoding_method=args.pos_encoding,
+            rank=rank,
+            world_size=world_size
+        )
+    
+        # Create dataloaders with pin_memory=True
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=args.batch_size,
+            shuffle=False,  # Shuffling is handled within the dataset if needed
+            num_workers=4,
+            pin_memory=True  # Enable pin_memory since data is on CPU
+        )
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=4,
+            pin_memory=True
+        )
+        test_loader = DataLoader(
+            test_dataset,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=4,
+            pin_memory=True
+        )
+    
+        # Initialize the model
+        model = MAEModel(
+            input_dim=args.required_columns,
+            embed_dim=args.embed_dim,
+            num_heads=args.number_heads,
+            depth=args.layers
+        ).to(device)
+    
+        # Wrap the model with DistributedDataParallel
+        model = nn.parallel.DistributedDataParallel(model, device_ids=[rank] if torch.cuda.is_available() else None)
+    
+        # Define loss and optimizer
+        criterion = nn.MSELoss()
+        optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
+        scheduler = None  # Add scheduler if needed
+    
+        # Initialize EarlyStopping
+        early_stopping = EarlyStopping(patience=args.patience, verbose=True, delta=args.delta, path='best_model.pt')
+    
+        # Setup TensorBoard
+        if rank == 0:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            project_dir = os.path.abspath(os.path.join(script_dir, os.pardir))
+            logs_dir = os.path.join(project_dir, 'logs')
+            os.makedirs(logs_dir, exist_ok=True)
+            timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+            unique_log_dir = os.path.join(logs_dir, f"run_{timestamp}")
+            writer = SummaryWriter(log_dir=unique_log_dir)
+            print(f"TensorBoard logs will be saved to: {unique_log_dir}")
+        else:
+            writer = None
+    
+        for epoch in range(args.num_epochs):
+            model.train()
+            train_loss = 0.0
+            train_corr = 0.0
+            num_batches = 0
+    
+            for batch_idx, batch_data in enumerate(train_loader):
                 if labels_dict:
                     data, labels = batch_data
-                    labels = labels.to(device)
+                    labels = labels.to(device)  # Move labels to GPU
                 else:
                     data = batch_data
-
-                data = data.to(device)
+    
+                data = data.to(device)  # Move data to GPU
+    
+                optimizer.zero_grad()
+    
+                # Generate row masks for the batch
                 row_mask = generate_row_mask(data.size(0), args.max_rows, args.mask_ratio).to(device)
                 reconstructed = model(data, row_mask)
-
+    
+                # Compute loss
                 if labels_dict:
+                    # If you have labels, adjust the loss computation accordingly
                     loss = criterion(reconstructed, labels)
                 else:
                     loss = criterion(
-                        reconstructed[row_mask.unsqueeze(-1).expand_as(reconstructed)],
-                        data[row_mask.unsqueeze(-1).expand_as(data)]
+                        reconstructed[row_mask.unsqueeze(-1).expand(-1, -1, args.embed_dim)],
+                        data[row_mask.unsqueeze(-1).expand(-1, -1, args.required_columns)]
                     )
-                val_loss += loss.item()
-
+    
+                loss.backward()
+                optimizer.step()
+                train_loss += loss.item()
+    
                 # Compute Pearson correlation
                 corr = compute_batch_pearson_correlation(reconstructed, data, row_mask)
-                val_corr += corr
-
-                val_batches += 1
-
-        # Reduce validation loss and correlation
-        val_loss_tensor = torch.tensor(val_loss).to(device)
-        val_corr_tensor = torch.tensor(val_corr).to(device)
-        dist.reduce(val_loss_tensor, 0, op=dist.ReduceOp.SUM)
-        dist.reduce(val_corr_tensor, 0, op=dist.ReduceOp.SUM)
-
+                train_corr += corr
+    
+                num_batches += 1
+    
+                if batch_idx % 10 == 0 and rank == 0:
+                    print(f"Epoch {epoch + 1}, Batch {batch_idx}, Loss: {loss.item():.4f}")
+    
+            # Reduce loss and correlation across all processes
+            train_loss_tensor = torch.tensor(train_loss).to(device)
+            train_corr_tensor = torch.tensor(train_corr).to(device)
+            dist.reduce(train_loss_tensor, 0, op=dist.ReduceOp.SUM)
+            dist.reduce(train_corr_tensor, 0, op=dist.ReduceOp.SUM)
+    
+            if rank == 0:
+                avg_train_loss = train_loss_tensor.item() / world_size / num_batches
+                avg_train_corr = train_corr_tensor.item() / world_size / num_batches
+                print(f"Epoch {epoch + 1} Training Loss: {avg_train_loss:.4f} Pearson Correlation: {avg_train_corr:.4f}")
+    
+                # Log training metrics
+                if writer:
+                    writer.add_scalar('Loss/Train', avg_train_loss, epoch + 1)
+                    writer.add_scalar('Correlation/Train', avg_train_corr, epoch + 1)
+    
+            # Validation
+            model.eval()
+            val_loss = 0.0
+            val_corr = 0.0
+            val_batches = 0
+    
+            with torch.no_grad():
+                for batch_data in val_loader:
+                    if labels_dict:
+                        data, labels = batch_data
+                        labels = labels.to(device)
+                    else:
+                        data = batch_data
+    
+                    data = data.to(device)
+                    row_mask = generate_row_mask(data.size(0), args.max_rows, args.mask_ratio).to(device)
+                    reconstructed = model(data, row_mask)
+    
+                    if labels_dict:
+                        loss = criterion(reconstructed, labels)
+                    else:
+                        loss = criterion(
+                            reconstructed[row_mask.unsqueeze(-1).expand(-1, -1, args.embed_dim)],
+                            data[row_mask.unsqueeze(-1).expand(-1, -1, args.required_columns)]
+                        )
+                    val_loss += loss.item()
+    
+                    # Compute Pearson correlation
+                    corr = compute_batch_pearson_correlation(reconstructed, data, row_mask)
+                    val_corr += corr
+    
+                    val_batches += 1
+    
+            # Reduce validation loss and correlation
+            val_loss_tensor = torch.tensor(val_loss).to(device)
+            val_corr_tensor = torch.tensor(val_corr).to(device)
+            dist.reduce(val_loss_tensor, 0, op=dist.ReduceOp.SUM)
+            dist.reduce(val_corr_tensor, 0, op=dist.ReduceOp.SUM)
+    
+            if rank == 0:
+                avg_val_loss = val_loss_tensor.item() / world_size / val_batches
+                avg_val_corr = val_corr_tensor.item() / world_size / val_batches
+                print(f"Epoch {epoch + 1} Validation Loss: {avg_val_loss:.4f} Pearson Correlation: {avg_val_corr:.4f}")
+    
+                # Log validation metrics
+                if writer:
+                    writer.add_scalar('Loss/Validation', avg_val_loss, epoch + 1)
+                    writer.add_scalar('Correlation/Validation', avg_val_corr, epoch + 1)
+    
+                # Early Stopping check
+                early_stopping(avg_val_loss, model, optimizer, scheduler)
+                if early_stopping.early_stop:
+                    print("Early stopping triggered. Stopping training.")
+                    break
+    
         if rank == 0:
-            avg_val_loss = val_loss_tensor.item() / world_size / val_batches
-            avg_val_corr = val_corr_tensor.item() / world_size / val_batches
-            print(f"Epoch {epoch + 1} Validation Loss: {avg_val_loss:.4f} Pearson Correlation: {avg_val_corr:.4f}")
-
-            # Log validation metrics
+            print("Training complete. Loading the best saved model for testing.")
+            checkpoint = torch.load('best_model.pt', map_location=device)  # Removed weights_only=True
+            model.module.load_state_dict(checkpoint)  # Directly load the state_dict
+            print("Best model loaded successfully.")
+        
+            # Final Evaluation on Test Set
+            model.eval()
+            test_loss = 0.0
+            test_corr = 0.0
+            test_batches = 0
+        
+            with torch.no_grad():
+                for batch_data in test_loader:
+                    if labels_dict:
+                        data, labels = batch_data
+                        labels = labels.to(device)
+                    else:
+                        data = batch_data
+        
+                    data = data.to(device)
+                    row_mask = generate_row_mask(data.size(0), args.max_rows, args.mask_ratio).to(device)
+                    reconstructed = model(data, row_mask)
+        
+                    if labels_dict:
+                        loss = criterion(reconstructed, labels)
+                    else:
+                        loss = criterion(
+                            reconstructed[row_mask.unsqueeze(-1).expand(-1, -1, args.embed_dim)],
+                            data[row_mask.unsqueeze(-1).expand(-1, -1, args.required_columns)]
+                        )
+                    test_loss += loss.item()
+        
+                    # Compute Pearson correlation
+                    corr = compute_batch_pearson_correlation(reconstructed, data, row_mask)
+                    test_corr += corr
+        
+                    test_batches += 1
+        
+            avg_test_loss = test_loss / test_batches
+            avg_test_corr = test_corr / test_batches
+            print(f"Final Test Loss: {avg_test_loss:.4f} Pearson Correlation: {avg_test_corr:.4f}")
+        
+            # Log test metrics
             if writer:
-                writer.add_scalar('Loss/Validation', avg_val_loss, epoch + 1)
-                writer.add_scalar('Correlation/Validation', avg_val_corr, epoch + 1)
-
-            # Early Stopping check
-            early_stopping(avg_val_loss, model, optimizer, scheduler)
-            if early_stopping.early_stop:
-                print("Early stopping triggered. Stopping training.")
-                break
-
-    # After training, only rank 0 saves the best model and evaluates on the test set
-    if rank == 0:
-        print("Training complete. Loading the best saved model for testing.")
-        checkpoint = torch.load('best_model.pt', map_location=device)
-        model.module.load_state_dict(checkpoint['model_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        if 'scheduler_state_dict' in checkpoint and scheduler:
-            scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-        print("Best model loaded successfully.")
-
-        # Final Evaluation on Test Set
-        model.eval()
-        test_loss = 0.0
-        test_corr = 0.0
-        test_batches = 0
-
-        with torch.no_grad():
-            for batch_data in test_loader:
-                if labels_dict:
-                    data, labels = batch_data
-                    labels = labels.to(device)
-                else:
-                    data = batch_data
-
-                data = data.to(device)
-                row_mask = generate_row_mask(data.size(0), args.max_rows, args.mask_ratio).to(device)
-                reconstructed = model(data, row_mask)
-
-                if labels_dict:
-                    loss = criterion(reconstructed, labels)
-                else:
-                    loss = criterion(
-                        reconstructed[row_mask.unsqueeze(-1).expand_as(reconstructed)],
-                        data[row_mask.unsqueeze(-1).expand_as(data)]
-                    )
-                test_loss += loss.item()
-
-                # Compute Pearson correlation
-                corr = compute_batch_pearson_correlation(reconstructed, data, row_mask)
-                test_corr += corr
-
-                test_batches += 1
-
-        avg_test_loss = test_loss / test_batches
-        avg_test_corr = test_corr / test_batches
-        print(f"Final Test Loss: {avg_test_loss:.4f} Pearson Correlation: {avg_test_corr:.4f}")
-
-        # Log test metrics
-        if writer:
-            writer.add_scalar('Loss/Test', avg_test_loss, epoch + 1)
-            writer.add_scalar('Correlation/Test', avg_test_corr, epoch + 1)
-
-        # Save the encoder
-        save_encoder(model, device)
-
-        # Close the TensorBoard writer
+                writer.add_scalar('Loss/Test', avg_test_loss, epoch + 1)
+                writer.add_scalar('Correlation/Test', avg_test_corr, epoch + 1)
+        
+            # Save the encoder
+            save_encoder(model, device)
+        
+            # Close the TensorBoard writer
+            if writer:
+                writer.close()
+    
+        cleanup_distributed()
+    
+    except Exception as e:
+        if rank == 0:
+            print(f"An exception occurred in process {rank}: {e}")
+        cleanup_distributed()
+        raise e  # Re-raise the exception after cleanup
+    
+    finally:
+        cleanup_distributed()
         if writer:
             writer.close()
 
-    cleanup_distributed()
 
 
 
@@ -824,7 +839,7 @@ def main():
     parser.add_argument('--mask_ratio', type=float, default=0.25, help='Mask ratio for MAE')
     parser.add_argument('--padding', type=str, default='zero', help='Padding strategy')
     parser.add_argument('--pos_encoding', type=str, default='add', help='Positional encoding method')
-    parser.add_argument('--embedding_dim', type=int, default=512, help='Embedding dimension')
+    parser.add_argument('--embed_dim', type=int, default=512, help='Embedding dimension')
     parser.add_argument('--number_heads', type=int, default=8, help='Number of attention heads')
     parser.add_argument('--layers', type=int, default=4, help='Number of transformer layers')
     parser.add_argument('--patience', type=int, default=3, help='Early stopping patience')
@@ -852,4 +867,8 @@ def main():
         train_model(0, 1, args)
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        print(f"An exception occurred: {e}")
+        sys.exit(1)  # Explicitly terminate the program
