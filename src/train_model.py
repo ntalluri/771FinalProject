@@ -8,6 +8,7 @@ from MAE import MAEModel
 import torch.nn as nn
 import random 
 import datetime
+import numpy as np
 
 def set_seed(seed=42):
     random.seed(seed)
@@ -268,6 +269,8 @@ embedding_dim = 512
 number_heads = 8
 layers = 4
 
+file_prop = 0.25
+
 # not tunable parameters 
 MAX_ROWS = 1387
 REQUIRED_COLUMNS = 30000
@@ -294,6 +297,10 @@ all_file_paths = gather_all_file_paths(root_dirs, folder_paths)
 
 # Shuffle and split the file paths
 random.shuffle(all_file_paths)
+len_paths = len(all_file_paths)
+num_keep = int(len_paths * file_prop)
+all_file_paths = all_file_paths[:num_keep]
+    
 train_ratio = 0.7
 val_ratio = 0.15
 test_ratio = 0.15

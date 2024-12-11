@@ -180,6 +180,10 @@ def train_model(rank, world_size, args):
 
     # Shuffle and split the file paths
     random.shuffle(all_file_paths)
+    len_paths = len(all_file_paths)
+    num_keep = int(len_paths * args.file_prop)
+    all_file_paths = all_file_paths[:num_keep]
+    
     train_ratio = 0.7
     val_ratio = 0.15
     test_ratio = 0.15
@@ -531,6 +535,7 @@ def main():
     parser.add_argument('--max_rows', type=int, default=1387, help='Maximum number of rows')
     parser.add_argument('--root_dirs', type=str, nargs='+', default=["/media/jesse/sda/Organized_SURF", "/media/jesse/sdb/Organized_SURF"], help='Root directories containing data')
     parser.add_argument('--exclude_dirs', type=str, nargs='*', default=folder_paths, help='Directories to exclude')
+    parser.add_argument('--file_prop', type=float, default=0.25, help='Proportion of total files to use')
     
     args = parser.parse_args()
 
