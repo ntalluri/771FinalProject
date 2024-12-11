@@ -7,8 +7,6 @@ from torch.utils.data import IterableDataset
 from torch.multiprocessing import Pool, cpu_count
 from itertools import cycle
 from functools import partial
-import pandas as pd
-from torch.utils.data import DataLoader
 
 # Constants for data dimensions
 MIN_ROWS = 1357
