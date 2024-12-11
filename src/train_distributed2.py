@@ -165,6 +165,255 @@ def save_encoder(best_model, device, save_path="trained_encoder_state_dict.pt"):
     torch.save(encoder_model.state_dict(), save_path)
     print(f"Trained encoder's state_dict saved to {save_path}")
 
+# def train_model(rank, world_size, args):
+#     """
+#     Distributed training function.
+#     """
+#     setup_distributed(rank, world_size)
+#     torch.manual_seed(42)
+#     random.seed(42)
+
+#     device = torch.device(f'cuda:{rank}' if torch.cuda.is_available() else 'cpu')
+
+#     # Gather all file paths
+#     all_file_paths = gather_all_file_paths(args.root_dirs, exclude_dirs=args.exclude_dirs)
+
+#     # Shuffle and split the file paths
+#     random.shuffle(all_file_paths)
+#     len_paths = len(all_file_paths)
+#     num_keep = int(len_paths * args.file_prop)
+#     all_file_paths = all_file_paths[:num_keep]
+    
+#     train_ratio = 0.7
+#     val_ratio = 0.15
+#     test_ratio = 0.15
+#     total_files = len(all_file_paths)
+#     train_end = int(train_ratio * total_files)
+#     val_end = train_end + int(val_ratio * total_files)
+#     train_file_paths = all_file_paths[:train_end]
+#     val_file_paths = all_file_paths[train_end:val_end]
+#     test_file_paths = all_file_paths[val_end:]
+    
+#     if rank == 0:
+#         print(f"Total files: {total_files}")
+#         print(f"Training files: {len(train_file_paths)}")
+#         print(f"Validation files: {len(val_file_paths)}")
+#         print(f"Testing files: {len(test_file_paths)}")
+
+#     # Create datasets
+#     train_dataset = HDF5IterableDataset(train_file_paths, padding_strategy=args.padding, pos_encoding_method=args.pos_encoding)
+#     val_dataset = HDF5IterableDataset(val_file_paths, padding_strategy=args.padding, pos_encoding_method=args.pos_encoding)
+#     test_dataset = HDF5IterableDataset(test_file_paths, padding_strategy=args.padding, pos_encoding_method=args.pos_encoding)
+
+#     # Create samplers and dataloaders
+#     train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True)
+#     val_sampler = DistributedSampler(val_dataset, num_replicas=world_size, rank=rank, shuffle=False)
+#     test_sampler = DistributedSampler(test_dataset, num_replicas=world_size, rank=rank, shuffle=False)
+
+#     train_loader = DataLoader(
+#         train_dataset,
+#         batch_size=args.batch_size,
+#         sampler=train_sampler,
+#         num_workers=4,
+#         pin_memory=True
+#     )
+#     val_loader = DataLoader(
+#         val_dataset,
+#         batch_size=args.batch_size,
+#         sampler=val_sampler,
+#         num_workers=4,
+#         pin_memory=True
+#     )
+#     test_loader = DataLoader(
+#         test_dataset,
+#         batch_size=args.batch_size,
+#         sampler=test_sampler,
+#         num_workers=4,
+#         pin_memory=True
+#     )
+
+#     # Initialize the model
+#     model = MAEModel(
+#         input_dim=args.required_columns,
+#         embed_dim=args.embedding_dim,
+#         num_heads=args.number_heads,
+#         depth=args.layers
+#     ).to(device)
+
+#     # Wrap the model with DistributedDataParallel
+#     model = nn.parallel.DistributedDataParallel(model, device_ids=[rank] if torch.cuda.is_available() else None)
+
+#     # Define loss and optimizer
+#     criterion = nn.MSELoss()
+#     optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
+#     scheduler = None  # Add scheduler if needed
+
+#     # Initialize EarlyStopping
+#     early_stopping = EarlyStopping(patience=args.patience, verbose=True, delta=args.delta, path='best_model.pt')
+
+#     # Setup TensorBoard
+#     if rank == 0:
+#         script_dir = os.path.dirname(os.path.abspath(__file__))
+#         project_dir = os.path.abspath(os.path.join(script_dir, os.pardir))
+#         logs_dir = os.path.join(project_dir, 'logs')
+#         os.makedirs(logs_dir, exist_ok=True)
+#         timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+#         unique_log_dir = os.path.join(logs_dir, f"run_{timestamp}")
+#         writer = SummaryWriter(log_dir=unique_log_dir)
+#         print(f"TensorBoard logs will be saved to: {unique_log_dir}")
+#     else:
+#         writer = None
+
+#     for epoch in range(args.num_epochs):
+#         train_sampler.set_epoch(epoch)
+#         model.train()
+#         train_loss = 0.0
+#         train_corr = 0.0
+#         num_batches = 0
+
+#         for batch_idx, batch_data in enumerate(train_loader):
+#             batch_data = batch_data.to(device)
+#             optimizer.zero_grad()
+
+#             # Generate row masks for the batch
+#             row_mask = generate_row_mask(batch_data.size(0), args.max_rows, args.mask_ratio).to(device)
+#             reconstructed = model(batch_data, row_mask)
+
+#             # Compute loss
+#             loss = criterion(
+#                 reconstructed[row_mask.unsqueeze(-1).expand_as(reconstructed)],
+#                 batch_data[row_mask.unsqueeze(-1).expand_as(batch_data)]
+#             )
+
+#             loss.backward()
+#             optimizer.step()
+#             train_loss += loss.item()
+
+#             # Compute Pearson correlation
+#             corr = compute_batch_pearson_correlation(reconstructed, batch_data, row_mask)
+#             train_corr += corr
+
+#             num_batches += 1
+
+#             if batch_idx % 10 == 0 and rank == 0:
+#                 print(f"Epoch {epoch + 1}, Batch {batch_idx}, Loss: {loss.item():.4f}")
+
+#         # Reduce loss and correlation across all processes
+#         train_loss_tensor = torch.tensor(train_loss).to(device)
+#         train_corr_tensor = torch.tensor(train_corr).to(device)
+#         dist.reduce(train_loss_tensor, 0, op=dist.ReduceOp.SUM)
+#         dist.reduce(train_corr_tensor, 0, op=dist.ReduceOp.SUM)
+
+#         if rank == 0:
+#             avg_train_loss = train_loss_tensor.item() / world_size / num_batches
+#             avg_train_corr = train_corr_tensor.item() / world_size / num_batches
+#             print(f"Epoch {epoch + 1} Training Loss: {avg_train_loss:.4f} Pearson Correlation: {avg_train_corr:.4f}")
+
+#             # Log training metrics
+#             if writer:
+#                 writer.add_scalar('Loss/Train', avg_train_loss, epoch + 1)
+#                 writer.add_scalar('Correlation/Train', avg_train_corr, epoch + 1)
+
+#         # Validation
+#         model.eval()
+#         val_loss = 0.0
+#         val_corr = 0.0
+#         val_batches = 0
+
+#         with torch.no_grad():
+#             for batch_data in val_loader:
+#                 batch_data = batch_data.to(device)
+#                 row_mask = generate_row_mask(batch_data.size(0), args.max_rows, args.mask_ratio).to(device)
+#                 reconstructed = model(batch_data, row_mask)
+
+#                 # Compute loss
+#                 loss = criterion(
+#                     reconstructed[row_mask.unsqueeze(-1).expand_as(reconstructed)],
+#                     batch_data[row_mask.unsqueeze(-1).expand_as(batch_data)]
+#                 )
+#                 val_loss += loss.item()
+
+#                 # Compute Pearson correlation
+#                 corr = compute_batch_pearson_correlation(reconstructed, batch_data, row_mask)
+#                 val_corr += corr
+
+#                 val_batches += 1
+
+#         # Reduce validation loss and correlation
+#         val_loss_tensor = torch.tensor(val_loss).to(device)
+#         val_corr_tensor = torch.tensor(val_corr).to(device)
+#         dist.reduce(val_loss_tensor, 0, op=dist.ReduceOp.SUM)
+#         dist.reduce(val_corr_tensor, 0, op=dist.ReduceOp.SUM)
+
+#         if rank == 0:
+#             avg_val_loss = val_loss_tensor.item() / world_size / val_batches
+#             avg_val_corr = val_corr_tensor.item() / world_size / val_batches
+#             print(f"Epoch {epoch + 1} Validation Loss: {avg_val_loss:.4f} Pearson Correlation: {avg_val_corr:.4f}")
+
+#             # Log validation metrics
+#             if writer:
+#                 writer.add_scalar('Loss/Validation', avg_val_loss, epoch + 1)
+#                 writer.add_scalar('Correlation/Validation', avg_val_corr, epoch + 1)
+
+#             # Early Stopping check
+#             early_stopping(avg_val_loss, model, optimizer, scheduler)
+#             if early_stopping.early_stop:
+#                 print("Early stopping triggered. Stopping training.")
+#                 break
+
+#     # After training, only rank 0 saves the best model and evaluates on the test set
+#     if rank == 0:
+#         print("Training complete. Loading the best saved model for testing.")
+#         checkpoint = torch.load('best_model.pt', map_location=device)
+#         model.module.load_state_dict(checkpoint['model_state_dict'])
+#         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+#         if 'scheduler_state_dict' in checkpoint and scheduler:
+#             scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+#         print("Best model loaded successfully.")
+
+#         # Final Evaluation on Test Set
+#         model.eval()
+#         test_loss = 0.0
+#         test_corr = 0.0
+#         test_batches = 0
+
+#         with torch.no_grad():
+#             for batch_data in test_loader:
+#                 batch_data = batch_data.to(device)
+#                 row_mask = generate_row_mask(batch_data.size(0), args.max_rows, args.mask_ratio).to(device)
+#                 reconstructed = model(batch_data, row_mask)
+
+#                 # Compute loss
+#                 loss = criterion(
+#                     reconstructed[row_mask.unsqueeze(-1).expand_as(reconstructed)],
+#                     batch_data[row_mask.unsqueeze(-1).expand_as(batch_data)]
+#                 )
+#                 test_loss += loss.item()
+
+#                 # Compute Pearson correlation
+#                 corr = compute_batch_pearson_correlation(reconstructed, batch_data, row_mask)
+#                 test_corr += corr
+
+#                 test_batches += 1
+
+#         avg_test_loss = test_loss / test_batches
+#         avg_test_corr = test_corr / test_batches
+#         print(f"Final Test Loss: {avg_test_loss:.4f} Pearson Correlation: {avg_test_corr:.4f}")
+
+#         # Log test metrics
+#         if writer:
+#             writer.add_scalar('Loss/Test', avg_test_loss, epoch + 1)
+#             writer.add_scalar('Correlation/Test', avg_test_corr, epoch + 1)
+
+#         # Save the encoder
+#         save_encoder(model, device)
+
+#         # Close the TensorBoard writer
+#         if writer:
+#             writer.close()
+
+#     cleanup_distributed()
+
 def train_model(rank, world_size, args):
     """
     Distributed training function.
@@ -183,7 +432,7 @@ def train_model(rank, world_size, args):
     len_paths = len(all_file_paths)
     num_keep = int(len_paths * args.file_prop)
     all_file_paths = all_file_paths[:num_keep]
-    
+
     train_ratio = 0.7
     val_ratio = 0.15
     test_ratio = 0.15
@@ -193,41 +442,61 @@ def train_model(rank, world_size, args):
     train_file_paths = all_file_paths[:train_end]
     val_file_paths = all_file_paths[train_end:val_end]
     test_file_paths = all_file_paths[val_end:]
-    
+
     if rank == 0:
         print(f"Total files: {total_files}")
         print(f"Training files: {len(train_file_paths)}")
         print(f"Validation files: {len(val_file_paths)}")
         print(f"Testing files: {len(test_file_paths)}")
 
-    # Create datasets
-    train_dataset = HDF5IterableDataset(train_file_paths, padding_strategy=args.padding, pos_encoding_method=args.pos_encoding)
-    val_dataset = HDF5IterableDataset(val_file_paths, padding_strategy=args.padding, pos_encoding_method=args.pos_encoding)
-    test_dataset = HDF5IterableDataset(test_file_paths, padding_strategy=args.padding, pos_encoding_method=args.pos_encoding)
+    # Optionally, if you have labels, prepare labels_dict
+    labels_dict = None  # Replace with your labels dictionary if applicable
 
-    # Create samplers and dataloaders
-    train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True)
-    val_sampler = DistributedSampler(val_dataset, num_replicas=world_size, rank=rank, shuffle=False)
-    test_sampler = DistributedSampler(test_dataset, num_replicas=world_size, rank=rank, shuffle=False)
+    # Create sharded datasets
+    train_dataset = HDF5IterableDataset(
+        train_file_paths,
+        labels_dict=labels_dict,
+        padding_strategy=args.padding,
+        pos_encoding_method=args.pos_encoding,
+        rank=rank,
+        world_size=world_size
+    )
+    val_dataset = HDF5IterableDataset(
+        val_file_paths,
+        labels_dict=labels_dict,
+        padding_strategy=args.padding,
+        pos_encoding_method=args.pos_encoding,
+        rank=rank,
+        world_size=world_size
+    )
+    test_dataset = HDF5IterableDataset(
+        test_file_paths,
+        labels_dict=labels_dict,
+        padding_strategy=args.padding,
+        pos_encoding_method=args.pos_encoding,
+        rank=rank,
+        world_size=world_size
+    )
 
+    # Create dataloaders with pin_memory=True
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
-        sampler=train_sampler,
+        shuffle=False,  # Shuffling is handled within the dataset if needed
         num_workers=4,
-        pin_memory=True
+        pin_memory=True  # Enable pin_memory since data is on CPU
     )
     val_loader = DataLoader(
         val_dataset,
         batch_size=args.batch_size,
-        sampler=val_sampler,
+        shuffle=False,
         num_workers=4,
         pin_memory=True
     )
     test_loader = DataLoader(
         test_dataset,
         batch_size=args.batch_size,
-        sampler=test_sampler,
+        shuffle=False,
         num_workers=4,
         pin_memory=True
     )
@@ -265,32 +534,42 @@ def train_model(rank, world_size, args):
         writer = None
 
     for epoch in range(args.num_epochs):
-        train_sampler.set_epoch(epoch)
         model.train()
         train_loss = 0.0
         train_corr = 0.0
         num_batches = 0
 
         for batch_idx, batch_data in enumerate(train_loader):
-            batch_data = batch_data.to(device)
+            if labels_dict:
+                data, labels = batch_data
+                labels = labels.to(device)  # Move labels to GPU
+            else:
+                data = batch_data
+
+            data = data.to(device)  # Move data to GPU
+
             optimizer.zero_grad()
 
             # Generate row masks for the batch
-            row_mask = generate_row_mask(batch_data.size(0), args.max_rows, args.mask_ratio).to(device)
-            reconstructed = model(batch_data, row_mask)
+            row_mask = generate_row_mask(data.size(0), args.max_rows, args.mask_ratio).to(device)
+            reconstructed = model(data, row_mask)
 
             # Compute loss
-            loss = criterion(
-                reconstructed[row_mask.unsqueeze(-1).expand_as(reconstructed)],
-                batch_data[row_mask.unsqueeze(-1).expand_as(batch_data)]
-            )
+            if labels_dict:
+                # If you have labels, adjust the loss computation accordingly
+                loss = criterion(reconstructed, labels)
+            else:
+                loss = criterion(
+                    reconstructed[row_mask.unsqueeze(-1).expand_as(reconstructed)],
+                    data[row_mask.unsqueeze(-1).expand_as(data)]
+                )
 
             loss.backward()
             optimizer.step()
             train_loss += loss.item()
 
             # Compute Pearson correlation
-            corr = compute_batch_pearson_correlation(reconstructed, batch_data, row_mask)
+            corr = compute_batch_pearson_correlation(reconstructed, data, row_mask)
             train_corr += corr
 
             num_batches += 1
@@ -322,19 +601,27 @@ def train_model(rank, world_size, args):
 
         with torch.no_grad():
             for batch_data in val_loader:
-                batch_data = batch_data.to(device)
-                row_mask = generate_row_mask(batch_data.size(0), args.max_rows, args.mask_ratio).to(device)
-                reconstructed = model(batch_data, row_mask)
+                if labels_dict:
+                    data, labels = batch_data
+                    labels = labels.to(device)
+                else:
+                    data = batch_data
 
-                # Compute loss
-                loss = criterion(
-                    reconstructed[row_mask.unsqueeze(-1).expand_as(reconstructed)],
-                    batch_data[row_mask.unsqueeze(-1).expand_as(batch_data)]
-                )
+                data = data.to(device)
+                row_mask = generate_row_mask(data.size(0), args.max_rows, args.mask_ratio).to(device)
+                reconstructed = model(data, row_mask)
+
+                if labels_dict:
+                    loss = criterion(reconstructed, labels)
+                else:
+                    loss = criterion(
+                        reconstructed[row_mask.unsqueeze(-1).expand_as(reconstructed)],
+                        data[row_mask.unsqueeze(-1).expand_as(data)]
+                    )
                 val_loss += loss.item()
 
                 # Compute Pearson correlation
-                corr = compute_batch_pearson_correlation(reconstructed, batch_data, row_mask)
+                corr = compute_batch_pearson_correlation(reconstructed, data, row_mask)
                 val_corr += corr
 
                 val_batches += 1
@@ -379,19 +666,27 @@ def train_model(rank, world_size, args):
 
         with torch.no_grad():
             for batch_data in test_loader:
-                batch_data = batch_data.to(device)
-                row_mask = generate_row_mask(batch_data.size(0), args.max_rows, args.mask_ratio).to(device)
-                reconstructed = model(batch_data, row_mask)
+                if labels_dict:
+                    data, labels = batch_data
+                    labels = labels.to(device)
+                else:
+                    data = batch_data
 
-                # Compute loss
-                loss = criterion(
-                    reconstructed[row_mask.unsqueeze(-1).expand_as(reconstructed)],
-                    batch_data[row_mask.unsqueeze(-1).expand_as(batch_data)]
-                )
+                data = data.to(device)
+                row_mask = generate_row_mask(data.size(0), args.max_rows, args.mask_ratio).to(device)
+                reconstructed = model(data, row_mask)
+
+                if labels_dict:
+                    loss = criterion(reconstructed, labels)
+                else:
+                    loss = criterion(
+                        reconstructed[row_mask.unsqueeze(-1).expand_as(reconstructed)],
+                        data[row_mask.unsqueeze(-1).expand_as(data)]
+                    )
                 test_loss += loss.item()
 
                 # Compute Pearson correlation
-                corr = compute_batch_pearson_correlation(reconstructed, batch_data, row_mask)
+                corr = compute_batch_pearson_correlation(reconstructed, data, row_mask)
                 test_corr += corr
 
                 test_batches += 1
@@ -413,6 +708,9 @@ def train_model(rank, world_size, args):
             writer.close()
 
     cleanup_distributed()
+
+
+
 
 def main():
     folder_paths = [
@@ -540,6 +838,9 @@ def main():
     args = parser.parse_args()
 
     world_size = args.world_size
+    if world_size > torch.cuda.device_count():
+        raise ValueError(f"world_size {world_size} exceeds available GPUs {torch.cuda.device_count()}")
+
     if world_size > 1:
         mp.spawn(
             train_model,
