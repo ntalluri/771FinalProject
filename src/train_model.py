@@ -269,7 +269,7 @@ embedding_dim = 512
 number_heads = 8
 layers = 4
 
-file_prop = 0.001
+file_prop = 0.25
 
 # not tunable parameters 
 MAX_ROWS = 1387
