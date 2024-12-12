@@ -140,16 +140,15 @@ def save_encoder(best_model, device, save_path="trained_encoder_state_dict.pt"):
     print("Extracting the encoder from the best model.")
     # Access the encoder
     if isinstance(best_model, nn.parallel.DistributedDataParallel):
-        encoder = best_model.module.encoder
-    else:
-        encoder = best_model.encoder
-
+        best_model = best_model.module
+    encoder = best_model.encoder
+    
     # Initialize a new Encoder instance with the same architecture
     encoder_model = Encoder(
-        input_dim=encoder.embedding.in_features,
-        embed_dim=encoder.embedding.out_features,
-        num_heads=encoder.transformer_encoder.layers[0].nhead,
-        depth=len(encoder.transformer_encoder.layers)
+        input_dim=best_model.input_dim,
+        embed_dim=best_model.embed_dim,
+        num_heads=best_model.num_heads,
+        depth=best_model.depth
     ).to(device)
 
     # Load the encoder's state_dict into the encoder_model
