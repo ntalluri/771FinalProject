@@ -4,7 +4,7 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter  # Import TensorBoard SummaryWriter
 from sklearn.model_selection import train_test_split
 from dataloader import HDF5IterableDataset, generate_row_mask
-from MAE import MAEModel
+from MAE import MAEModel, Encoder
 import torch.nn as nn
 import random 
 import datetime
@@ -496,30 +496,26 @@ writer.add_scalar('Correlation/Test', test_corr, epoch + 1)
 print("Extracting the encoder from the best model.")
 
 # Access the encoder
-if isinstance(best_model, nn.DataParallel):
-    encoder = best_model.module.encoder
-else:
-    encoder = best_model.encoder
+if isinstance(best_model, nn.parallel.DistributedDataParallel):
+        best_model = best_model.module
+encoder = best_model.encoder
 
-# Initialize a new encoder instance (same architecture)
-encoder_model = MAEModel(
-    input_dim=REQUIRED_COLUMNS,
-    embed_dim=embedding_dim,
-    num_heads=number_heads,
-    depth=layers
-).encoder
+# Initialize a new Encoder instance with the same architecture
+encoder_model = Encoder(
+    input_dim=best_model.input_dim,
+    embed_dim=best_model.embed_dim,
+    num_heads=best_model.num_heads,
+    depth=best_model.depth
+).to(device)
 
-encoder_model.to(device)
-
-# Load the encoder's state_dict from the best model
+# Load the encoder's state_dict into the encoder_model
 encoder_model.load_state_dict(encoder.state_dict())
 encoder_model.eval()
 print("Encoder extracted successfully.")
 
 # Save the encoder's state_dict
-encoder_save_path = "trained_encoder_state_dict.pt"
-torch.save(encoder_model.state_dict(), encoder_save_path)
-print(f"Trained encoder's state_dict saved to {encoder_save_path}")
+torch.save(encoder_model.state_dict(), save_path)
+print(f"Trained encoder's state_dict saved to {save_path}")
 
 # Close the TensorBoard writer
 writer.close()
