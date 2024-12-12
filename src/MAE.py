@@ -101,13 +101,14 @@ class Decoder(nn.Module):
         )
         self.transformer_decoder = nn.TransformerDecoder(decoder_layer, num_layers=depth)
         self.norm = nn.LayerNorm(embed_dim)
-        self.reconstruction_head = nn.Linear(embed_dim, embed_dim)  # Adjust as needed
+        #self.reconstruction_head = nn.Linear(embed_dim, embed_dim)  # Adjust as needed
 
     def forward(self, encoded, target, tgt_mask=None, tgt_key_padding_mask=None):
         decoded = self.transformer_decoder(target, encoded, tgt_mask=tgt_mask, tgt_key_padding_mask=tgt_key_padding_mask)
         decoded = self.norm(decoded)
-        reconstructed = self.reconstruction_head(decoded)
-        return reconstructed
+        #reconstructed = self.reconstruction_head(decoded)
+        #return reconstructed
+        return decoded
 
 class MAEModel(nn.Module):
     def __init__(self, input_dim, embed_dim, num_heads, depth, mask_token_value=0.0):
