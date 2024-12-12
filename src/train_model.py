@@ -260,7 +260,7 @@ folder_paths = [
 
 # tunable parameters
 batch = 6
-num_epochs = 10
+num_epochs = 4
 learning_rate = 0.0001
 mask_ratio = 0.25
 padding = 'zero'

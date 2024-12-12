@@ -13,7 +13,6 @@ MIN_ROWS = 1357
 MAX_ROWS = 1387
 REQUIRED_COLUMNS = 30000
 
-
 def generate_row_mask(batch_size, num_rows, mask_ratio=0.25):
     """
     Generate masks for each batch to indicate which rows should be masked.
@@ -67,76 +66,85 @@ class HDF5IterableDataset(IterableDataset):
         row_encoding[:, 1::2] = np.cos(position * div_term)
         
         return torch.tensor(row_encoding, dtype=torch.float32, device=self.device)
-
+    
     def process_file(self, file_path):
         """
         Process a single HDF5 file with GPU acceleration where beneficial.
         CPU is used for I/O and initial signal processing, GPU for later stages.
         Returns both processed data and label if labels_dict is provided.
         """
-        with h5py.File(file_path, 'r') as file:
-            fs = file['Acquisition/Raw[0]'].attrs["OutputDataRate"]
-            # Keep initial load on CPU
-            raw_data_np = file['Acquisition/Raw[0]/RawData'][:]
+        try:
+            with h5py.File(file_path, 'r') as file:
+                fs = file['Acquisition/Raw[0]'].attrs.get("OutputDataRate", None)
+                if fs is None:
+                    print(f"Missing 'OutputDataRate' attribute in file: {file_path}")
+                    return None
 
-            rows, cols = raw_data_np.shape
-            if cols != REQUIRED_COLUMNS or rows < MIN_ROWS or rows > MAX_ROWS:
-                print(f"Ignored file due to size: {file_path} (Shape: {raw_data_np.shape})")
-                return None
+                # Keep initial load on CPU
+                raw_data_np = file['Acquisition/Raw[0]/RawData'][:]
 
-            # Perform CPU-bound operations first
-            data_detrend = signal.detrend(raw_data_np, type='linear')
-            sos = signal.butter(5, [20, 100], 'bandpass', fs=fs, output='sos')
-            data_filtered = signal.sosfilt(sos, data_detrend)
-            
-            # Convert to tensor and move to GPU for remaining operations
-            data_tensor = torch.tensor(data_filtered, dtype=torch.float32, device=self.device)
-            
-            # Normalize on GPU
-            data_normalized = (data_tensor - data_tensor.mean()) / (data_tensor.std() + 1e-8)
-            
-            # Padding on GPU
-            if rows < MAX_ROWS:
-                padding_rows = MAX_ROWS - rows
-                if self.padding_strategy == 'zero':
-                    padding = torch.zeros((padding_rows, cols), device=self.device)
-                elif self.padding_strategy == 'noise':
-                    mean = data_normalized.mean()
-                    std = data_normalized.std()
-                    padding = torch.normal(mean, std, (padding_rows, cols), device=self.device)
-                elif self.padding_strategy == 'repeat':
-                    padding = data_normalized[-1:].repeat(padding_rows, 1)
-                elif self.padding_strategy == 'mirror':
-                    num_rows_to_mirror = min(padding_rows, rows)
-                    mirrored_rows = data_normalized[-num_rows_to_mirror:].flip(0)
-                    if padding_rows > num_rows_to_mirror:
-                        remaining_rows = padding_rows - num_rows_to_mirror
-                        padding = torch.cat([
-                            mirrored_rows,
-                            mirrored_rows[-1:].repeat(remaining_rows, 1)
-                        ])
-                    else:
-                        padding = mirrored_rows[:padding_rows]
+                rows, cols = raw_data_np.shape
+                if cols != REQUIRED_COLUMNS or rows < MIN_ROWS or rows > MAX_ROWS:
+                    print(f"Ignored file due to size: {file_path} (Shape: {raw_data_np.shape})")
+                    return None
+
+                # Perform CPU-bound operations first
+                data_detrend = signal.detrend(raw_data_np, type='linear')
+                sos = signal.butter(5, [20, 100], 'bandpass', fs=fs, output='sos')
+                data_filtered = signal.sosfilt(sos, data_detrend)
                 
-                data_padded = torch.cat([data_normalized, padding], dim=0)
-            else:
-                data_padded = data_normalized
+                # Convert to tensor and move to GPU for remaining operations
+                data_tensor = torch.tensor(data_filtered, dtype=torch.float32, device=self.device)
+                
+                # Normalize on GPU
+                data_normalized = (data_tensor - data_tensor.mean()) / (data_tensor.std() + 1e-8)
+                
+                # Padding on GPU
+                if rows < MAX_ROWS:
+                    padding_rows = MAX_ROWS - rows
+                    if self.padding_strategy == 'zero':
+                        padding = torch.zeros((padding_rows, cols), device=self.device)
+                    elif self.padding_strategy == 'noise':
+                        mean = data_normalized.mean()
+                        std = data_normalized.std()
+                        padding = torch.normal(mean, std, (padding_rows, cols), device=self.device)
+                    elif self.padding_strategy == 'repeat':
+                        padding = data_normalized[-1:].repeat(padding_rows, 1)
+                    elif self.padding_strategy == 'mirror':
+                        num_rows_to_mirror = min(padding_rows, rows)
+                        mirrored_rows = data_normalized[-num_rows_to_mirror:].flip(0)
+                        if padding_rows > num_rows_to_mirror:
+                            remaining_rows = padding_rows - num_rows_to_mirror
+                            padding = torch.cat([
+                                mirrored_rows,
+                                mirrored_rows[-1:].repeat(remaining_rows, 1)
+                            ])
+                        else:
+                            padding = mirrored_rows[:padding_rows]
+                    
+                    data_padded = torch.cat([data_normalized, padding], dim=0)
+                else:
+                    data_padded = data_normalized
 
-            # Apply positional encoding on GPU
-            if self.pos_encoding_method == 'add':
-                data_with_pos = data_padded + self.pos_encoding_cache
-            else:  # 'concat'
-                data_with_pos = torch.cat([data_padded, self.pos_encoding_cache], dim=1)
+                # Apply positional encoding on GPU
+                if self.pos_encoding_method == 'add':
+                    data_with_pos = data_padded + self.pos_encoding_cache
+                else:  # 'concat'
+                    data_with_pos = torch.cat([data_padded, self.pos_encoding_cache], dim=1)
 
-            # Get label if labels_dict is provided
-            if self.labels_dict is not None:
-                filename = os.path.basename(file_path)
-                label = self.labels_dict.get(filename)  # Default to 0 if not found
-                label_tensor = torch.tensor(label, dtype=torch.float32, device=self.device)
-                return data_with_pos, label_tensor
-            
-            return data_with_pos
+                # Get label if labels_dict is provided
+                if self.labels_dict is not None:
+                    filename = os.path.basename(file_path)
+                    label = self.labels_dict.get(filename, 0)  # Default to 0 if not found
+                    label_tensor = torch.tensor(label, dtype=torch.float32, device=self.device)
+                    return data_with_pos, label_tensor
+                
+                return data_with_pos
 
+        except Exception as e:
+            print(f"Error processing file {file_path}: {e}")
+            return None
+    
     def __iter__(self):
         """
         Iterate through the dataset, yielding processed tensors and labels if available.

@@ -57,14 +57,14 @@ class EarlyStopping:
         self.counter = 0
         self.best_score = None
         self.early_stop = False
-        self.best_metric = float('-inf')  # Assuming higher is better (e.g., validation F1)
+        self.best_loss = float('inf')
 
-    def __call__(self, metric, model):
-        score = metric  # Assuming higher metric is better
+    def __call__(self, loss, model):
+        score = -loss  # Since we want to minimize loss
 
         if self.best_score is None:
             self.best_score = score
-            self.save_checkpoint(model, metric)
+            self.save_checkpoint(loss, model)
         elif score < self.best_score + self.delta:
             self.counter += 1
             if self.verbose:
@@ -72,17 +72,16 @@ class EarlyStopping:
             if self.counter >= self.patience:
                 self.early_stop = True
         else:
-            if score > self.best_score + self.delta:
-                if self.verbose:
-                    print(f'Validation metric improved ({self.best_score:.4f} --> {score:.4f}).  Saving model ...')
-                self.save_checkpoint(model, metric)
             self.best_score = score
+            self.save_checkpoint(loss, model)
             self.counter = 0
 
-    def save_checkpoint(self, model, metric):
-        '''Saves the model when validation metric improves.'''
+    def save_checkpoint(self, val_loss, model):
+        '''Saves the entire model when validation loss decreases.'''
+        if self.verbose:
+            print(f'Validation loss decreased ({self.best_loss:.6f} --> {val_loss:.6f}).  Saving model ...')
         torch.save(model.state_dict(), self.path)
-        self.best_metric = metric
+        self.best_loss = val_loss
 
 # ---------------------------
 # 3. Binary Classifier Definition
@@ -114,8 +113,8 @@ class BinaryClassifier(nn.Module):
         pooled = encoded.mean(dim=1)
 
         # Pass the pooled vector through the classifier
-        out = self.classifier(pooled).squeeze()
-
+        out = self.classifier(pooled).squeeze(1)
+        out = out.view(-1)  # Flatten to (batch_size,)
         return out
 
 # ---------------------------
@@ -235,7 +234,7 @@ def train_classifier(model, train_loader, val_loader, num_epochs=10, patience=3)
         writer.add_scalar('Precision/Validation', val_precision, epoch + 1)
 
         # Early Stopping Check
-        early_stopping(val_f1, model)  # Using F1 score as the monitored metric
+        early_stopping(avg_val_loss, model)  # Using F1 score as the monitored metric
 
         if early_stopping.early_stop:
             print("Early stopping triggered. Stopping training.")
@@ -286,12 +285,14 @@ if __name__ == "__main__":
     REQUIRED_COLUMNS = 30000
 
     # Hyperparameters
-    batch_size = 4
+    batch_size = 6
     num_epochs = 10
     learning_rate = 1e-4
     embedding_dim = 512    # Ensure this matches your trained encoder
     number_heads = 8       # Ensure this matches your trained encoder
     layers = 4             # Ensure this matches your trained encoder
+    
+    file_prop = 0.01
 
     # Paths
     labels_csv_path = "labeled_filenames.csv"
@@ -309,10 +310,16 @@ if __name__ == "__main__":
     # 3. Get All H5 File Paths
     all_file_paths = get_all_file_paths(folder_paths)
     print(f"Total files found: {len(all_file_paths)}")
+    
+    random.shuffle(all_file_paths)
+    len_paths = len(all_file_paths)
+    num_keep = int(len_paths * file_prop)
+    all_file_paths = all_file_paths[:num_keep]
+
 
     # 4. Split Data: 70% Train, 15% Val, 15% Test
-    train_files, temp_files = train_test_split(all_file_paths, test_size=0.3, random_state=42, shuffle=True)
-    val_files, test_files = train_test_split(temp_files, test_size=0.5, random_state=42, shuffle=True)
+    train_files, temp_files = train_test_split(all_file_paths, test_size=0.3, random_state=42)
+    val_files, test_files = train_test_split(temp_files, test_size=0.5, random_state=42)
 
     print(f"Training files: {len(train_files)}")
     print(f"Validation files: {len(val_files)}")
@@ -324,49 +331,43 @@ if __name__ == "__main__":
     test_dataset = HDF5IterableDataset(file_paths=test_files, labels_dict=labels_dict, device=device)
 
     # 6. Create DataLoaders
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size)
 
     # 7. Initialize the Encoder
+    # Initialize the Encoder
     encoder_model = Encoder(
         input_dim=REQUIRED_COLUMNS,
         embed_dim=embedding_dim,
         num_heads=number_heads,
         depth=layers
     )
-
+    
     # Load the trained encoder's state dictionary
-    if not os.path.exists(encoder_state_path):
-        raise FileNotFoundError(f"Encoder state dictionary not found at {encoder_state_path}")
-
     encoder_state_dict = torch.load(encoder_state_path, map_location=device)
     encoder_model.load_state_dict(encoder_state_dict)
     print("Encoder loaded successfully.")
-
-    # If using multiple GPUs
-    if torch.cuda.device_count() > 1:
-        print(f"Using {torch.cuda.device_count()} GPUs for the encoder!")
-        encoder_model = nn.DataParallel(encoder_model)
-
+    
     encoder_model.to(device)
     encoder_model.eval()  # Set encoder to evaluation mode
-
-    # 8. Initialize the Binary Classifier
+    
+    # Initialize the Binary Classifier
     classifier_model = BinaryClassifier(
         encoder=encoder_model,
         embed_dim=embedding_dim,
         freeze_encoder=True  # Set to False if you want to fine-tune the encoder
     )
-
-    # If using multiple GPUs
+    
+    # If using multiple GPUs, wrap only the classifier_model
     if torch.cuda.device_count() > 1:
         print(f"Using {torch.cuda.device_count()} GPUs for the classifier!")
         classifier_model = nn.DataParallel(classifier_model)
     else:
         print("Using single GPU or CPU for the classifier.")
-
+    
     classifier_model.to(device)
+
 
     # 9. Initialize TensorBoard SummaryWriter with Unique Log Directory
     script_dir = os.path.dirname(os.path.abspath(__file__))
