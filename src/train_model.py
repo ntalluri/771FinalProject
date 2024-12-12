@@ -456,7 +456,7 @@ best_model.to(device)
 
 # Load the saved state_dict
 best_model_path = 'best_model.pt'
-best_model.load_state_dict(torch.load(best_model_path, map_location=device))
+best_model.load_state_dict(torch.load(best_model_path, map_location=device, weights_only=True))
 print("Best model loaded successfully.")
 
 # Final Evaluation on Test Set using the loaded best MAE model
@@ -496,8 +496,8 @@ writer.add_scalar('Correlation/Test', test_corr, epoch + 1)
 print("Extracting the encoder from the best model.")
 
 # Access the encoder
-if isinstance(best_model, nn.parallel.DistributedDataParallel):
-        best_model = best_model.module
+if hasattr(best_model, 'module'):
+    best_model = best_model.module
 encoder = best_model.encoder
 
 # Initialize a new Encoder instance with the same architecture
@@ -514,6 +514,7 @@ encoder_model.eval()
 print("Encoder extracted successfully.")
 
 # Save the encoder's state_dict
+save_path = "trained_encoder_state_dict.pt"
 torch.save(encoder_model.state_dict(), save_path)
 print(f"Trained encoder's state_dict saved to {save_path}")
 
