@@ -102,7 +102,7 @@ class BinaryClassifier(nn.Module):
             nn.Linear(128, 32),
             nn.ReLU(),
             nn.Linear(32, 1),
-            nn.Sigmoid()
+            # nn.Sigmoid()
         )
 
     def forward(self, x):
@@ -114,7 +114,7 @@ class BinaryClassifier(nn.Module):
 
         # Pass the pooled vector through the classifier
         out = self.classifier(pooled).squeeze(1)
-        out = out.view(-1)  # Flatten to (batch_size,)
+        # out = out.view(-1)  # Flatten to (batch_size,)
         return out
 
 # ---------------------------
@@ -155,8 +155,12 @@ def compute_metrics(y_true, y_pred):
 # ---------------------------
 # 5. Training Function
 # ---------------------------
-def train_classifier(model, train_loader, val_loader, num_epochs=10, patience=3):
-    criterion = nn.BCELoss()
+def train_classifier(model, train_loader, val_loader, num_epochs=10, patience=3, pos_weight_tensor=None):
+    # criterion = nn.BCELoss()
+    if pos_weight_tensor is not None:
+        criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight_tensor)
+    else:
+        criterion = nn.BCEWithLogitsLoss()
     optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=1e-4)
     
     # Initialize EarlyStopping
@@ -181,7 +185,8 @@ def train_classifier(model, train_loader, val_loader, num_epochs=10, patience=3)
             optimizer.step()
 
             train_loss += loss.item()
-            predictions = (outputs >= 0.5).float()
+            # predictions = (outputs >= 0.5).float()
+            predictions = (torch.sigmoid(outputs) >= 0.5).float()
 
             train_preds.extend(predictions.cpu().numpy())
             train_labels.extend(labels.cpu().numpy())
@@ -209,7 +214,8 @@ def train_classifier(model, train_loader, val_loader, num_epochs=10, patience=3)
                 loss = criterion(outputs, labels)
 
                 val_loss += loss.item()
-                predictions = (outputs >= 0.5).float()
+                # predictions = (outputs >= 0.5).float()
+                predictions = (torch.sigmoid(outputs) >= 0.5).float()
 
                 val_preds.extend(predictions.cpu().numpy())
                 val_labels.extend(labels.cpu().numpy())
@@ -312,31 +318,77 @@ if __name__ == "__main__":
     print(f"Total files found: {len(all_file_paths)}")
     
     random.shuffle(all_file_paths)
-    len_paths = len(all_file_paths)
+
+    # 4. Separate Positive and Negative Files
+    positive_files = [f for f in all_file_paths if labels_dict.get(os.path.basename(f), 0) == 1]
+    negative_files = [f for f in all_file_paths if labels_dict.get(os.path.basename(f), 0) == 0]
+
+    print(f"Total positive files: {len(positive_files)}")
+    print(f"Total negative files: {len(negative_files)}")
+
+    # Validate the number of positive samples
+    assert len(positive_files) == 9, f"Expected 9 positive samples, found {len(positive_files)}"
+
+    # Shuffle the positive and negative files
+    random.shuffle(positive_files)
+    random.shuffle(negative_files)
+    
+    len_paths = len(negative_files)
     num_keep = int(len_paths * file_prop)
-    all_file_paths = all_file_paths[:num_keep]
+    negative_files = negative_files[:num_keep]
 
+    # 5. Split Positive Files into Train/Val/Test
+    train_pos = positive_files[:4]
+    val_pos = positive_files[4:6]
+    test_pos = positive_files[6:]
 
-    # 4. Split Data: 70% Train, 15% Val, 15% Test
-    train_files, temp_files = train_test_split(all_file_paths, test_size=0.3, random_state=42)
-    val_files, test_files = train_test_split(temp_files, test_size=0.5, random_state=42)
+    print(f"Training positive samples: {len(train_pos)}")
+    print(f"Validation positive samples: {len(val_pos)}")
+    print(f"Testing positive samples: {len(test_pos)}")
 
-    print(f"Training files: {len(train_files)}")
-    print(f"Validation files: {len(val_files)}")
-    print(f"Testing files: {len(test_files)}")
+    # 6. Split Negative Files into Train/Val/Test based on 70/15/15 proportions
+    train_neg, temp_neg = train_test_split(negative_files, test_size=5/9, random_state=42)
+    val_neg, test_neg = train_test_split(temp_neg, test_size=3/5, random_state=42)
 
-    # 5. Create Datasets
+    print(f"Training negative samples: {len(train_neg)}")
+    print(f"Validation negative samples: {len(val_neg)}")
+    print(f"Testing negative samples: {len(test_neg)}")
+
+    # 7. Combine Positive and Negative Files for Each Split
+    train_files = train_pos + train_neg
+    val_files = val_pos + val_neg
+    test_files = test_pos + test_neg
+    
+    random.shuffle(train_files)
+    random.shuffle(val_files)
+    random.shuffle(test_files)
+
+    print(f"Total training files: {len(train_files)}")
+    print(f"Total validation files: {len(val_files)}")
+    print(f"Total testing files: {len(test_files)}")
+    
+    # 8. Create Datasets
     train_dataset = HDF5IterableDataset(file_paths=train_files, labels_dict=labels_dict, device=device)
     val_dataset = HDF5IterableDataset(file_paths=val_files, labels_dict=labels_dict, device=device)
     test_dataset = HDF5IterableDataset(file_paths=test_files, labels_dict=labels_dict, device=device)
 
-    # 6. Create DataLoaders
+        # 9. Create DataLoaders
     train_loader = DataLoader(train_dataset, batch_size=batch_size)
     val_loader = DataLoader(val_dataset, batch_size=batch_size)
     test_loader = DataLoader(test_dataset, batch_size=batch_size)
 
-    # 7. Initialize the Encoder
-    # Initialize the Encoder
+    # 10. Compute Class Weights for the Training Set
+    train_labels = [labels_dict.get(os.path.basename(f), 0) for f in train_files]
+    num_pos = sum(train_labels)
+    num_neg = len(train_labels) - num_pos
+
+    # Avoid division by zero
+    if num_pos == 0:
+        raise ValueError("No positive samples in the training set.")
+
+    pos_weight = torch.tensor([num_neg / num_pos], dtype=torch.float32).to(device)
+
+    # 11. Initialize the Encoder
     encoder_model = Encoder(
         input_dim=REQUIRED_COLUMNS,
         embed_dim=embedding_dim,
@@ -368,8 +420,7 @@ if __name__ == "__main__":
     
     classifier_model.to(device)
 
-
-    # 9. Initialize TensorBoard SummaryWriter with Unique Log Directory
+    # 12. Initialize TensorBoard SummaryWriter with Unique Log Directory
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_dir = os.path.abspath(os.path.join(script_dir, os.pardir))
     logs_dir = os.path.join(project_dir, 'logs', 'binary_classifier')
@@ -380,25 +431,26 @@ if __name__ == "__main__":
     writer = SummaryWriter(log_dir=unique_log_dir)
     print(f"TensorBoard logs will be saved to: {unique_log_dir}")
 
-    # 10. Train the Classifier
+    # 13. Train the Classifier
     trained_classifier = train_classifier(
         model=classifier_model,
         train_loader=train_loader,
         val_loader=val_loader,
         num_epochs=num_epochs,
-        patience=3  # Adjust patience as needed
+        patience=3,  # Adjust patience as needed
+        pos_weight_tensor=pos_weight  # Pass the computed pos_weight
     )
 
-    # 11. Save the Trained Classifier
+    # 14. Save the Trained Classifier
     if isinstance(trained_classifier, nn.DataParallel):
         torch.save(trained_classifier.module.state_dict(), best_classifier_path)
     else:
         torch.save(trained_classifier.state_dict(), best_classifier_path)
     print(f"Trained classifier saved to {best_classifier_path}")
 
-    # 12. Evaluate on Test Set
+    # 15. Evaluate on Test Set
     evaluate_model(trained_classifier, test_loader)
 
-    # 13. Close the TensorBoard writer
+    # 16. Close the TensorBoard writer
     writer.close()
     print("Training and evaluation complete.")
