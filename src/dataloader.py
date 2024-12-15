@@ -4,9 +4,8 @@ import numpy as np
 from scipy import signal
 import os
 from torch.utils.data import IterableDataset
-from torch.multiprocessing import Pool, cpu_count
 from itertools import cycle
-from functools import partial
+import random
 
 # Constants for data dimensions
 MIN_ROWS = 1357
@@ -33,16 +32,39 @@ def generate_row_mask(batch_size, num_rows, mask_ratio=0.25):
     return row_mask
 
 class HDF5IterableDataset(IterableDataset):
-    def __init__(self, file_paths, labels_dict=None, padding_strategy='zero', pos_encoding_method='add', device='cuda'):
+    def __init__(self, file_paths, labels_dict=None, padding_strategy='zero',
+                 pos_encoding_method='add', device='cuda', mode='train',
+                 augment_positive=True, augmentations=None):
         """
         Initialize the dataset with GPU support and optional labels.
-        
+
         Args:
             file_paths (list): List of HDF5 file paths
             labels_dict (dict, optional): Dictionary mapping filenames to labels (0 or 1)
             padding_strategy (str): Strategy for padding rows
             pos_encoding_method (str): Method for positional encoding
             device (str): Device to process data on ('cuda' or 'cpu')
+            mode (str): Mode of the dataset ('train', 'val', 'test')
+            augment_positive (bool): Whether to apply augmentations to positive samples
+            augmentations (dict, optional): Dictionary specifying which augmentations to apply
+                Example:
+                {
+                    'noise': {
+                        'apply_prob': 0.5,
+                        'level_min': 0.001,
+                        'level_max': 0.02
+                    },
+                    'row_swap': {
+                        'apply_prob': 0.5,
+                        'swap_prob_min': 0.3,
+                        'swap_prob_max': 0.7
+                    },
+                    'column_shift': {
+                        'apply_prob': 0.5,
+                        'shift_max_min': 1,
+                        'shift_max_max': 10
+                    }
+                }
         """
         self.file_paths = file_paths
         self.labels_dict = labels_dict
@@ -51,10 +73,57 @@ class HDF5IterableDataset(IterableDataset):
         self.padding_strategy = padding_strategy
         self.pos_encoding_method = pos_encoding_method
         self.device = device
-        
-        # Pre-compute position encoding matrices for GPU
+        self.mode = mode.lower()
+        self.augment_positive = augment_positive
+        self.augmentations = augmentations if augmentations is not None else {
+            'noise': {
+                'apply_prob': 0.5,
+                'level_min': 0.001,
+                'level_max': 0.02
+            },
+            'row_swap': {
+                'apply_prob': 0.5,
+                'swap_prob_min': 0.3,
+                'swap_prob_max': 0.7
+            },
+            'column_shift': {
+                'apply_prob': 0.5,
+                'shift_max_min': 1,
+                'shift_max_max': 10
+            }
+        }
+
+        # Validate mode
+        if self.mode not in ['train', 'val', 'test']:
+            raise ValueError("Mode should be one of 'train', 'val', or 'test'.")
+
+        # Separate positive and negative files
+        if self.labels_dict is not None:
+            self.positive_files = [f for f in self.file_paths if self.labels_dict.get(os.path.basename(f), 0) == 1]
+            self.negative_files = [f for f in self.file_paths if self.labels_dict.get(os.path.basename(f), 0) == 0]
+            
+            if self.mode == 'train':
+                if not self.positive_files:
+                    raise ValueError("No positive samples found in the provided file paths.")
+                if not self.negative_files:
+                    raise ValueError("No negative samples found in the provided file paths.")
+            else:
+                # For validation and test, ensure all positive and negative samples are included
+                if not self.positive_files and not self.negative_files:
+                    raise ValueError("No samples found in the provided file paths.")
+        else:
+            self.positive_files = []
+            self.negative_files = self.file_paths.copy()
+
+        # Initialize cycling iterator for positive samples if in training mode and oversampling is desired
+        if self.mode == 'train' and self.positive_files:
+            self.positive_iter = cycle(self.positive_files)
+        else:
+            self.positive_iter = iter([])  # Empty iterator
+
+        # Precompute position encoding matrices for GPU
         self.pos_encoding_cache = self._prepare_pos_encoding()
-    
+
     def _prepare_pos_encoding(self):
         """Precompute position encoding matrices and store them on GPU"""
         rows, cols = MAX_ROWS, REQUIRED_COLUMNS
@@ -67,6 +136,91 @@ class HDF5IterableDataset(IterableDataset):
         
         return torch.tensor(row_encoding, dtype=torch.float32, device=self.device)
     
+    def add_random_noise(self, data, noise_level):
+        """
+        Add Gaussian noise to the data.
+
+        Args:
+            data (torch.Tensor): Input data tensor
+            noise_level (float): Standard deviation of the Gaussian noise
+
+        Returns:
+            torch.Tensor: Noisy data
+        """
+        noise = torch.randn_like(data) * noise_level
+        return data + noise
+
+    def random_row_swap(self, data, swap_prob):
+        """
+        Randomly swap pairs of rows in the data.
+
+        Args:
+            data (torch.Tensor): Input data tensor
+            swap_prob (float): Probability of swapping each pair
+
+        Returns:
+            torch.Tensor: Data with randomly swapped rows
+        """
+        rows, cols = data.shape
+        for i in range(rows - 1):
+            if random.random() < swap_prob:
+                j = random.randint(i + 1, rows - 1)
+                data[[i, j]] = data[[j, i]]
+        return data
+
+    def column_shift(self, data, shift_max):
+        """
+        Randomly shift columns left or right by up to shift_max positions.
+        Performs a circular shift so that columns shifted off one end reappear on the other.
+
+        Args:
+            data (torch.Tensor): Input data tensor
+            shift_max (int): Maximum number of positions to shift
+
+        Returns:
+            torch.Tensor: Data with circularly shifted columns
+        """
+        shift = random.randint(-shift_max, shift_max)
+        if shift == 0:
+            return data
+        # Perform circular shift using torch.roll without zeroing out
+        shifted_data = torch.roll(data, shifts=shift, dims=1)
+        return shifted_data
+
+    def apply_augmentations(self, data):
+        """
+        Apply a series of augmentations to the data based on configuration.
+        Each augmentation is applied with a certain probability and random parameters within specified ranges.
+
+        Args:
+            data (torch.Tensor): Input data tensor
+
+        Returns:
+            torch.Tensor: Augmented data
+        """
+        # Noise Augmentation
+        noise_config = self.augmentations.get('noise', {})
+        if noise_config.get('apply_prob', 0.0) > 0.0:
+            if random.random() < noise_config['apply_prob']:
+                noise_level = random.uniform(noise_config['level_min'], noise_config['level_max'])
+                data = self.add_random_noise(data, noise_level)
+
+        # Row Swap Augmentation
+        row_swap_config = self.augmentations.get('row_swap', {})
+        if row_swap_config.get('apply_prob', 0.0) > 0.0:
+            if random.random() < row_swap_config['apply_prob']:
+                swap_prob = random.uniform(row_swap_config['swap_prob_min'], row_swap_config['swap_prob_max'])
+                data = self.random_row_swap(data, swap_prob)
+
+        # Column Shift Augmentation
+        column_shift_config = self.augmentations.get('column_shift', {})
+        if column_shift_config.get('apply_prob', 0.0) > 0.0:
+            if random.random() < column_shift_config['apply_prob']:
+                shift_max = random.randint(column_shift_config['shift_max_min'], column_shift_config['shift_max_max'])
+                data = self.column_shift(data, shift_max)
+
+        return data
+
     def process_file(self, file_path):
         """
         Process a single HDF5 file with GPU acceleration where beneficial.
@@ -85,6 +239,9 @@ class HDF5IterableDataset(IterableDataset):
 
                 rows, cols = raw_data_np.shape
                 if cols != REQUIRED_COLUMNS or rows < MIN_ROWS or rows > MAX_ROWS:
+                    label = self.labels_dict.get(os.path.basename(file_path), 0) if self.labels_dict else 0
+                    if self.mode == 'train' and label == 1:
+                        raise ValueError(f"Positive file {file_path} does not meet size requirements.")
                     print(f"Ignored file due to size: {file_path} (Shape: {raw_data_np.shape})")
                     return None
 
@@ -144,12 +301,55 @@ class HDF5IterableDataset(IterableDataset):
         except Exception as e:
             print(f"Error processing file {file_path}: {e}")
             return None
-    
+
     def __iter__(self):
         """
         Iterate through the dataset, yielding processed tensors and labels if available.
+        Implements oversampling of positive samples and applies augmentations only in training mode.
+        Robustly handles exceptions to ensure the iterator continues despite individual file errors.
         """
-        for file_path in self.file_paths:
-            processed = self.process_file(file_path)
-            if processed is not None:
-                yield processed
+        if self.labels_dict is not None:
+            if self.mode == 'train':
+                # Iterate through negative files
+                for neg_file in self.negative_files:
+                    try:
+                        neg_sample = self.process_file(neg_file)
+                        if neg_sample is not None:
+                            yield neg_sample
+                    except Exception as e:
+                        print(f"Skipping negative file {neg_file} due to error: {e}")
+                        continue
+
+                    # Oversample positive samples
+                    if self.positive_files:
+                        try:
+                            pos_file = next(self.positive_iter)
+                            pos_sample = self.process_file(pos_file)
+                            if pos_sample is not None and self.augment_positive:
+                                data, label = pos_sample
+                                data = self.apply_augmentations(data)
+                                pos_sample = (data, label)
+                                yield pos_sample
+                        except Exception as e:
+                            print(f"Error processing positive file {pos_file}: {e}")
+                            continue
+            else:
+                # For 'val' and 'test' modes, yield all samples without oversampling or augmentations
+                for file_path in self.file_paths:
+                    try:
+                        sample = self.process_file(file_path)
+                        if sample is not None:
+                            yield sample
+                    except Exception as e:
+                        print(f"Skipping file {file_path} due to error: {e}")
+                        continue
+        else:
+            # If no labels, yield normally
+            for file_path in self.file_paths:
+                try:
+                    sample = self.process_file(file_path)
+                    if sample is not None:
+                        yield sample
+                except Exception as e:
+                    print(f"Skipping file {file_path} due to error: {e}")
+                    continue
