@@ -101,12 +101,8 @@ class BinaryClassifier(nn.Module):
         super(BinaryClassifier, self).__init__()
         self.encoder = encoder
 
-        if freeze_encoder:
-            for param in self.encoder.parameters():
-                param.requires_grad = False
-        else:
-            for param in self.encoder.parameters():
-                param.requires_grad = True
+        for param in self.encoder.parameters():
+            param.requires_grad = not freeze_encoder
 
         # Define the classifier layers
         self.classifier = nn.Sequential(
