@@ -104,6 +104,9 @@ class BinaryClassifier(nn.Module):
         if freeze_encoder:
             for param in self.encoder.parameters():
                 param.requires_grad = False
+        else:
+            for param in self.encoder.parameters():
+                param.requires_grad = True
 
         # Define the classifier layers
         self.classifier = nn.Sequential(
