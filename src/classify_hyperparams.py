@@ -575,7 +575,7 @@ if __name__ == "__main__":
             writer=writer  # Pass the TensorBoard writer
         )
 
-        test_acc, test_f1, test_recall, test_precision = evaluate_model(classifier_model, test_loader)
+        test_acc, test_f1, test_recall, test_precision = evaluate_model(trained_classifier, test_loader)
 
         # 17. Close the TensorBoard writer
         writer.close()
@@ -600,7 +600,7 @@ if __name__ == "__main__":
         # Update best model if current run has higher validation F1
         if test_f1 > best_test_f1:
             best_val_f1 = val_f1
-            best_model_state = copy.deepcopy(classifier_model.state_dict())
+            best_model_state = copy.deepcopy(trained_classifier.state_dict())
             best_params = params
 
    # After all combinations
