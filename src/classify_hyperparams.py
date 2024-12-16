@@ -12,6 +12,8 @@ import pandas as pd
 import random
 import datetime
 import numpy as np
+import itertools
+import copy
 
 # ---------------------------
 # 1. Seed Setting for Reproducibility
@@ -186,7 +188,7 @@ def train_classifier(model, train_loader, val_loader, num_epochs=10, patience=3,
     
     # Initialize EarlyStopping to monitor F1 score
     early_stopping = EarlyStopping(patience=patience, verbose=True, 
-                                   delta=0.0, path='best_classifier.pt', mode='min')
+                                   delta=0.0, path='best_classifier.pt', mode='max')
     
     for epoch in range(num_epochs):
         print(f"Epoch {epoch + 1}/{num_epochs}")
@@ -214,7 +216,8 @@ def train_classifier(model, train_loader, val_loader, num_epochs=10, patience=3,
                 train_labels.extend(labels.cpu().numpy())
                 train_batches += 1
 
-                print(f"  Batch {batch_idx}, Loss: {loss.item():.4f}")
+                if batch_idx % 10 == 0:
+                    print(f"  Batch {batch_idx}, Loss: {loss.item():.4f}")
             except Exception as e:
                 print(f"Error during training batch {batch_idx}: {e}")
                 continue
@@ -270,7 +273,7 @@ def train_classifier(model, train_loader, val_loader, num_epochs=10, patience=3,
             writer.add_scalar('Precision/Validation', val_precision, epoch + 1)
 
         # Early Stopping Check based on F1 score
-        early_stopping(avg_val_loss, model)
+        early_stopping(val_f1, model)
 
         if early_stopping.early_stop:
             print("Early stopping triggered. Stopping training.")
@@ -336,7 +339,7 @@ if __name__ == "__main__":
 
     # Hyperparameters
     batch_size = 6
-    num_epochs = 10
+    num_epochs = 4
     input_dim = 512    # Ensure this matches your trained encoder
     number_heads = 8       # Ensure this matches your trained encoder
     layers = 4             # Ensure this matches your trained encoder
@@ -347,7 +350,7 @@ if __name__ == "__main__":
       'learning_rate': [1e-4, 1e-3],
       'freeze_encoder': [True, False],
       'weight_decay': [1e-5, 1e-4],
-      'use_pos_weight': [True, False]
+      'use_pos_weight': [True, False],
       'embeddings': [
           [128, 64],
           [256],
@@ -356,7 +359,7 @@ if __name__ == "__main__":
         ]
       }
       
-    param_combinaions = list(itertools.product(*param_grid.values()))
+    param_combinations = list(itertools.product(*param_grid.values()))
     param_names = list(param_grid.keys())
     print(f"Total hyperparameter combinations to try: {len(param_combinations)}")
 
@@ -535,7 +538,7 @@ if __name__ == "__main__":
         classifier_model = BinaryClassifier(
             encoder=encoder_model,
             input_dim = input_dim,
-            embed_dim=embeddings,
+            embeddings=embeddings,
             freeze_encoder=freeze_encoder  # Set to False if you want to fine-tune the encoder
         )
     
@@ -584,8 +587,6 @@ if __name__ == "__main__":
         # Append the results
         results.append({
             **params,
-            'val_loss': avg_val_loss,
-            'val_f1': val_f1,
             'test_acc': test_acc,
             'test_f1': test_f1,
             'test_recall': test_recall,
@@ -599,7 +600,7 @@ if __name__ == "__main__":
 
         # Update best model if current run has higher validation F1
         if test_f1 > best_test_f1:
-            best_val_f1 = val_f1
+            best_test_f1 = test_f1
             best_model_state = copy.deepcopy(trained_classifier.state_dict())
             best_params = params
 
