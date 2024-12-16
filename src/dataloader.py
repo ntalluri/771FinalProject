@@ -242,7 +242,6 @@ class HDF5IterableDataset(IterableDataset):
                     label = self.labels_dict.get(os.path.basename(file_path), 0) if self.labels_dict else 0
                     if self.mode == 'train' and label == 1:
                         raise ValueError(f"Positive file {file_path} does not meet size requirements.")
-                    print(f"Ignored file due to size: {file_path} (Shape: {raw_data_np.shape})")
                     return None
 
                 # Perform CPU-bound operations first
