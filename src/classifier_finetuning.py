@@ -15,7 +15,7 @@ import numpy as np
 import itertools
 import copy
 
-# seed setting for reproducibility
+# seed setting
 def set_seed(seed=42):
     random.seed(seed)
     np.random.seed(seed)
@@ -26,7 +26,7 @@ def set_seed(seed=42):
 
 set_seed(42)
 
-# early stopping implementation
+# early stopping 
 class EarlyStopping:
     """
     Early stops the training if the monitored metric does not improve after a given patience.
