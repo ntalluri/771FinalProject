@@ -61,15 +61,15 @@ class MAEModel(nn.Module):
     def forward(self, x, row_mask):
         batch_size, num_rows, num_cols = x.size()
 
-        # Apply row mask
+        # apply row mask
         row_mask_expanded = row_mask.unsqueeze(-1).expand(-1, -1, num_cols)
         x_masked = x.clone()
         x_masked[row_mask_expanded] = self.mask_token_value
 
-        # Encode the masked input
+        # encode the masked input
         encoded = self.encoder(x_masked)
 
-        # Decode using the encoded representations
+        # cecode using the encoded representations
         decoded = self.decoder(encoded, encoded)
 
         return decoded

@@ -256,7 +256,7 @@ for param_values in param_combinations[8:]:  # Skip the first 8 combinations
     df.to_csv("parameter_tuning_results.csv", mode='a', index=False)
     print("Results saved to current parameter_tuning_results.csv")
     
-    # Save the best model based on validation loss
+    # save the best model based on validation loss
     if val_loss < best_val_loss:
         best_val_loss = val_loss
         best_model = model
