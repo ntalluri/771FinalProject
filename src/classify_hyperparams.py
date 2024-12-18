@@ -391,14 +391,14 @@ if __name__ == "__main__":
 
     param_grid = {
       'learning_rate': [1e-4],
-      'freeze_encoder': [False],
+      'freeze_encoder': [True, False],
       'weight_decay': [1e-4],
       'use_pos_weight': [True, False],
       'embeddings': [
-           # [128, 64],
-           [256],
-          # [256, 128],
-          # [256, 128, 64],
+          [128, 64],
+          [256],
+          [256, 128],
+          [256, 128, 64],
         ]
       }
       
