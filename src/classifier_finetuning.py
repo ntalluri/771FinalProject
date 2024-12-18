@@ -4,8 +4,8 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DataLoader
-from dataloader import HDF5IterableDataset  # Ensure correct import path
-from MAE import Encoder  # Ensure correct import path
+from dataloader import HDF5IterableDataset
+from MAE import Encoder
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import f1_score, accuracy_score, recall_score, precision_score, precision_recall_curve
 import pandas as pd
@@ -15,9 +15,7 @@ import numpy as np
 import itertools
 import copy
 
-# ---------------------------
-# 1. Seed Setting for Reproducibility
-# ---------------------------
+# seed setting for reproducibility
 def set_seed(seed=42):
     random.seed(seed)
     np.random.seed(seed)
@@ -28,9 +26,7 @@ def set_seed(seed=42):
 
 set_seed(42)
 
-# ---------------------------
-# 2. Early Stopping Implementation
-# ---------------------------
+# early stopping implementation
 class EarlyStopping:
     """
     Early stops the training if the monitored metric does not improve after a given patience.
@@ -98,9 +94,7 @@ class EarlyStopping:
         self.best_metric = metric
         self.optimal_threshold = optimal_threshold
 
-# ---------------------------
-# 3. Binary Classifier Definition
-# ---------------------------
+# binary classifier definition
 class BinaryClassifier(nn.Module):
     def __init__(self, encoder, input_dim, embeddings, freeze_encoder=True):
         super(BinaryClassifier, self).__init__()
@@ -118,19 +112,17 @@ class BinaryClassifier(nn.Module):
         self.classifier = nn.Sequential(*layers)
 
     def forward(self, x):
-        # Pass input through the encoder
+        # pass input through the encoder
         encoded = self.encoder(x)  # Shape: (batch_size, num_rows, embed_dim)
 
-        # Apply mean pooling over the sequence dimension to get (batch_size, embed_dim)
+        # apply mean pooling over the sequence dimension to get (batch_size, embed_dim)
         pooled = encoded.mean(dim=1)
 
-        # Pass the pooled vector through the classifier
+        #pPass the pooled vector through the classifier
         out = self.classifier(pooled).squeeze(1)
         return out
 
-# ---------------------------
-# 4. Utility Functions
-# ---------------------------
+# utility functions
 def load_labels(csv_path):
     """
     Load labels from CSV file
@@ -141,7 +133,7 @@ def load_labels(csv_path):
 def get_all_file_paths(folder_paths):
     all_file_paths = []
     for subdir_path in folder_paths:
-        # List files ending with '.h5' in the current subdirectory
+        # list files ending with '.h5' in the current subdirectory
         try:
             files_in_subdir = os.listdir(subdir_path)
         except FileNotFoundError:
@@ -171,9 +163,7 @@ def find_optimal_threshold(y_true, y_probs):
     best_f1 = f1_scores[optimal_idx] if optimal_idx < len(f1_scores) else f1_scores[-1]
     return optimal_threshold, best_f1
 
-# ---------------------------
-# 5. Training Function
-# ---------------------------
+# training function
 def train_classifier(model, train_loader, val_loader, num_epochs=10, patience=3, pos_weight_tensor=None, weight_decay=0.0, lr=1e-4, writer=None):
     """
     Train the binary classifier.
@@ -197,11 +187,11 @@ def train_classifier(model, train_loader, val_loader, num_epochs=10, patience=3,
         criterion = nn.BCEWithLogitsLoss()
     optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=lr, weight_decay=weight_decay)
     
-    # Initialize EarlyStopping to monitor validation loss
+    # initialize early stopping to monitor validation loss
     early_stopping = EarlyStopping(patience=patience, verbose=True, 
                                    delta=0.0, path='best_val_loss_model.pt', mode='min')
     
-    # Variables to track the best F1 score
+    # variables to track the best F1 score
     best_f1 = -float('inf')
     best_f1_threshold = 0.5
     best_f1_model_path = 'best_f1_model.pt'
@@ -209,7 +199,7 @@ def train_classifier(model, train_loader, val_loader, num_epochs=10, patience=3,
     for epoch in range(num_epochs):
         print(f"Epoch {epoch + 1}/{num_epochs}")
         
-        # Training Phase
+        # training phase
         model.train()
         train_loss = 0.0
         train_preds = []
@@ -244,7 +234,7 @@ def train_classifier(model, train_loader, val_loader, num_epochs=10, patience=3,
         print(f"  Training Loss: {avg_train_loss:.4f}, Acc: {train_acc:.4f}, "
               f"F1: {train_f1:.4f}, Recall: {train_recall:.4f}, Precision: {train_precision:.4f}")
 
-        # Validation Phase
+        # validation phase
         model.eval()
         val_loss = 0.0
         val_preds = []
@@ -280,7 +270,7 @@ def train_classifier(model, train_loader, val_loader, num_epochs=10, patience=3,
         print(f"  Validation Loss: {avg_val_loss:.4f}, Acc: {val_acc:.4f}, "
               f"F1: {val_f1:.4f}, Recall: {val_recall:.4f}, Precision: {val_precision:.4f}")
 
-        # Logging to TensorBoard
+        # logging to tensorBoard
         if writer:
             writer.add_scalar('Loss/Train', avg_train_loss, epoch + 1)
             writer.add_scalar('Accuracy/Train', train_acc, epoch + 1)
@@ -297,10 +287,10 @@ def train_classifier(model, train_loader, val_loader, num_epochs=10, patience=3,
             writer.add_scalar('F1/Best', current_best_f1, epoch + 1)
             writer.add_scalar('Optimal_Threshold', optimal_threshold, epoch + 1)
 
-        # Early Stopping Check based on validation loss
+        # earlysStopping check based on validation loss
         early_stopping(avg_val_loss, model, optimal_threshold)
 
-        # Check if current F1 is the best
+        # check if current F1 is the best
         if current_best_f1 > best_f1:
             best_f1 = current_best_f1
             best_f1_threshold = optimal_threshold
@@ -311,7 +301,7 @@ def train_classifier(model, train_loader, val_loader, num_epochs=10, patience=3,
             print("Early stopping triggered. Stopping training.")
             break
 
-    # Load the best validation loss model
+    # load the best validation loss model
     print("Loading the best model based on validation loss...")
     model.load_state_dict(torch.load('best_val_loss_model.pt'))
     best_val_loss_threshold = early_stopping.optimal_threshold
@@ -319,9 +309,7 @@ def train_classifier(model, train_loader, val_loader, num_epochs=10, patience=3,
 
     return model, best_val_loss_threshold, best_f1_threshold, best_f1_model_path
 
-# ---------------------------
-# 6. Evaluation Function
-# ---------------------------
+# evaluation function
 def evaluate_model(model, test_loader, threshold=0.5):
     """
     Evaluate the model on the test set.
@@ -367,27 +355,25 @@ def evaluate_model(model, test_loader, threshold=0.5):
 
     return test_acc, test_f1, test_recall, test_precision
 
-# ---------------------------
-# 7. Main Execution
-# ---------------------------
+# main
 if __name__ == "__main__":
-    # Device configuration
+    # device configuration
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
-    # Constants for data dimensions
+    # constants for data dimensions
     MIN_ROWS = 1357
     MAX_ROWS = 1387
     REQUIRED_COLUMNS = 30000
 
-    # Hyperparameters
+    # hyperparameters
     batch_size = 6
     num_epochs = 10
-    input_dim = 512    # Ensure this matches your trained encoder
-    number_heads = 8       # Ensure this matches your trained encoder
-    layers = 4             # Ensure this matches your trained encoder
+    input_dim = 512
+    number_heads = 8
+    layers = 4 
     
-    file_prop = 0.01  # Proportion of negative samples to keep
+    file_prop = 0.01  # proportion of negative samples to keep
 
     param_grid = {
       'learning_rate': [1e-4],
@@ -406,45 +392,45 @@ if __name__ == "__main__":
     param_names = list(param_grid.keys())
     print(f"Total hyperparameter combinations to try: {len(param_combinations)}")
 
-    # Paths
+    # paths
     labels_csv_path = "labeled_filenames.csv"
     folders_txt_path = 'labeled_folders.txt'
     encoder_state_path = 'trained_encoder_state_dict.pt'
     best_classifier_path = 'best_classifier.pt'
 
-    # 1. Load Labels
+    # load Labels
     labels_dict = load_labels(labels_csv_path)
 
-    # 2. Load Folder Paths
+    # load folder paths
     with open(folders_txt_path, 'r') as file:
         folder_paths = file.read().splitlines()
 
-    # 3. Get All H5 File Paths
+    # get all H5 file paths
     all_file_paths = get_all_file_paths(folder_paths)
     print(f"Total files found: {len(all_file_paths)}")
     
     random.shuffle(all_file_paths)
 
-    # 4. Separate Positive and Negative Files
+    # separate positive and negative Files
     positive_files = [f for f in all_file_paths if labels_dict.get(os.path.basename(f), 0) == 1]
     negative_files = [f for f in all_file_paths if labels_dict.get(os.path.basename(f), 0) == 0]
 
     print(f"Total positive files: {len(positive_files)}")
     print(f"Total negative files: {len(negative_files)}")
 
-    # Validate the number of positive samples
+    # validate the number of positive samples
     assert len(positive_files) == 9, f"Expected 9 positive samples, found {len(positive_files)}"
 
-    # Shuffle the positive and negative files
+    # shuffle the positive and negative files
     random.shuffle(positive_files)
     random.shuffle(negative_files)
     
-    # Limit negative samples based on file_prop
+    # limit negative samples based on file_prop
     len_paths = len(negative_files)
     num_keep = int(len_paths * file_prop)
     negative_files = negative_files[:num_keep]
 
-    # 5. Split Positive Files into Train/Val/Test
+    # split positive files into Train/Val/Test
     train_pos = positive_files[:4]
     val_pos = positive_files[4:6]
     test_pos = positive_files[6:]
@@ -453,7 +439,7 @@ if __name__ == "__main__":
     print(f"Validation positive samples: {len(val_pos)}")
     print(f"Testing positive samples: {len(test_pos)}")
 
-    # 6. Split Negative Files into Train/Val/Test based on proportions
+    # split negative files into Train/Val/Test based on proportions
     train_neg, temp_neg = train_test_split(negative_files, test_size=5/9, random_state=42)
     val_neg, test_neg = train_test_split(temp_neg, test_size=3/5, random_state=42)
 
@@ -461,7 +447,7 @@ if __name__ == "__main__":
     print(f"Validation negative samples: {len(val_neg)}")
     print(f"Testing negative samples: {len(test_neg)}")
 
-    # 7. Combine Positive and Negative Files for Each Split
+    # combine positive and negative files for each Split
     train_files = train_pos + train_neg
     val_files = val_pos + val_neg
     test_files = test_pos + test_neg
@@ -474,26 +460,26 @@ if __name__ == "__main__":
     print(f"Total validation files: {len(val_files)}")
     print(f"Total testing files: {len(test_files)}")
     
-    # 8. Define augmentation configuration with randomness
+    # define augmentation configuration with randomness
     augmentations = {
         'noise': {
-            'apply_prob': 0.5,        # 50% chance to apply noise
-            'level_min': 0.001,       # Minimum noise level
-            'level_max': 0.02         # Maximum noise level
+            'apply_prob': 0.5,
+            'level_min': 0.001,
+            'level_max': 0.02
         },
-        'row_shift': {  # Changed from 'row_swap' to 'row_shift'
+        'row_shift': {
                 'apply_prob': 0.5,
                 'shift_max_min': 1,
                 'shift_max_max': 693
             },
         'column_shift': {
-            'apply_prob': 0.5,        # 50% chance to apply column shift
-            'shift_max_min': 1,       # Minimum shift value
-            'shift_max_max': 15000       # Maximum shift value
+            'apply_prob': 0.5,
+            'shift_max_min': 1,
+            'shift_max_max': 15000
         }
     }
 
-    # 9. Create Datasets with appropriate modes
+    # create datasets with appropriate modes
     train_dataset = HDF5IterableDataset(
         file_paths=train_files,
         labels_dict=labels_dict,
@@ -508,8 +494,8 @@ if __name__ == "__main__":
         labels_dict=labels_dict,
         device=device,
         mode='val',
-        augment_positive=False,  # No augmentations in validation
-        augmentations=augmentations  # Augmentations won't be applied as mode='val'
+        augment_positive=False,
+        augmentations=augmentations
     )
 
     test_dataset = HDF5IterableDataset(
@@ -517,32 +503,32 @@ if __name__ == "__main__":
         labels_dict=labels_dict,
         device=device,
         mode='test',
-        augment_positive=False,  # No augmentations in test
-        augmentations=augmentations  # Augmentations won't be applied as mode='test'
+        augment_positive=False,
+        augmentations=augmentations
     )
 
-    # 11. Compute Class Weights for the Training Set
+    # compute class weights for the training set
     train_labels = [labels_dict.get(os.path.basename(f), 0) for f in train_files]
     num_pos = sum(train_labels)
     num_neg = len(train_labels) - num_pos
 
-    # Avoid division by zero
+    # avoid division by zero
     if num_pos == 0:
         raise ValueError("No positive samples in the training set.")
 
     pos_weight = torch.tensor([num_neg / num_pos], dtype=torch.float32).to(device)
 
-    # 11. Initialize a list to store all results
+    # initialize a list to store all results
     results = []
     best_test_f1 = -float('inf')
     best_model_state = None
     best_params = None
 
-    # 12. Generate all hyperparameter combinations
+    # generate all hyperparameter combinations
     param_combinations = list(itertools.product(*param_grid.values()))
     print(f"Starting hyperparameter tuning over {len(param_combinations)} combinations.")
 
-    # 13. Loop over all parameter combinations
+    # loop over all parameter combinations
     for idx, param_values in enumerate(param_combinations):
         params = dict(zip(param_names, param_values))
         print(f"\n=== Hyperparameter Combination {idx + 1}/{len(param_combinations)} ===")
@@ -554,14 +540,14 @@ if __name__ == "__main__":
         use_pos_weight = params['use_pos_weight']
         embeddings = params['embeddings']
 
-        # 10. Create DataLoaders
+        # create DataLoaders
         train_loader = DataLoader(train_dataset, batch_size=batch_size)
         val_loader = DataLoader(val_dataset, batch_size=batch_size)
         test_loader = DataLoader(test_dataset, batch_size=batch_size)
     
         print("Datasets and DataLoaders are set up successfully.")
 
-        # 12. Initialize the Encoder
+        # initialize the encoder
         encoder_model = Encoder(
             input_dim=REQUIRED_COLUMNS,
             embed_dim=input_dim,
@@ -569,23 +555,23 @@ if __name__ == "__main__":
             depth=layers
         )
     
-        # Load the trained encoder's state dictionary
+        # load the trained encoder's state dictionary
         encoder_state_dict = torch.load(encoder_state_path, map_location=device)
         encoder_model.load_state_dict(encoder_state_dict)
         print("Encoder loaded successfully.")
     
         encoder_model.to(device)
-        encoder_model.eval()  # Set encoder to evaluation mode
+        encoder_model.eval()  # set encoder to evaluation mode
 
-        # Initialize the Binary Classifier
+        # initialize the binary classifier
         classifier_model = BinaryClassifier(
             encoder=encoder_model,
             input_dim = input_dim,
             embeddings=embeddings,
-            freeze_encoder=freeze_encoder  # Set to False if you want to fine-tune the encoder
+            freeze_encoder=freeze_encoder
         )
 
-        # If using multiple GPUs, wrap only the classifier_model
+        # if using multiple GPUs, wrap only the classifier_model
         if torch.cuda.device_count() > 1:
             print(f"Using {torch.cuda.device_count()} GPUs for the classifier!")
             classifier_model = nn.DataParallel(classifier_model)
@@ -594,7 +580,7 @@ if __name__ == "__main__":
         
         classifier_model.to(device)
 
-        # 13. Initialize TensorBoard SummaryWriter with Unique Log Directory
+        # initialize TensorBoard SummaryWriter with unique log directory
         script_dir = os.path.dirname(os.path.abspath(__file__))
         project_dir = os.path.abspath(os.path.join(script_dir, os.pardir))
         logs_dir = os.path.join(project_dir, 'logs', 'binary_classifier')
@@ -610,20 +596,20 @@ if __name__ == "__main__":
         else:
             pos_weight_tensor = pos_weight
 
-        # 14. Train the Classifier
+        # train the classifier
         trained_classifier, best_val_loss_threshold, best_f1_threshold, best_f1_model_path = train_classifier(
             model=classifier_model,
             train_loader=train_loader,
             val_loader=val_loader,
             num_epochs=num_epochs,
-            patience=5,  # Adjust patience as needed
-            pos_weight_tensor=pos_weight_tensor,  # Pass the computed pos_weight
+            patience=5,
+            pos_weight_tensor=pos_weight_tensor,
             weight_decay = weight_decay,
             lr = learning_rate,
-            writer=writer  # Pass the TensorBoard writer
+            writer=writer
         )
 
-        # Evaluate the model with the best validation loss
+        # evaluate the model with the best validation loss
         print("\nEvaluating model with best validation loss:")
         val_loss_model = copy.deepcopy(trained_classifier)
         val_loss_model.load_state_dict(torch.load('best_val_loss_model.pt'))
@@ -632,7 +618,7 @@ if __name__ == "__main__":
             val_loss_model, test_loader, threshold=best_val_loss_threshold
         )
 
-        # Evaluate the model with the best F1 score
+        # evaluate the model with the best F1 score
         print("\nEvaluating model with best F1 score:")
         best_f1_model = copy.deepcopy(trained_classifier)
         best_f1_model.load_state_dict(torch.load(best_f1_model_path))
@@ -641,11 +627,11 @@ if __name__ == "__main__":
             best_f1_model, test_loader, threshold=best_f1_threshold
         )
 
-        # 17. Close the TensorBoard writer
+        # close the TensorBoard writer
         writer.close()
         print("Training and evaluation complete.")
 
-        # Append the results
+        # append the results
         results.append({
             **params,
             'test_acc_val_loss': test_acc_val_loss,
@@ -658,27 +644,26 @@ if __name__ == "__main__":
             'test_precision_f1': test_precision_f1
         })
 
-        # Save intermediate results
+        # save intermediate results
         results_df = pd.DataFrame(results)
         results_df.to_csv("classifier_parameter_tuning_results.csv", mode='a', header=not os.path.exists("classifier_parameter_tuning_results.csv"), index=False)
         print("Results saved to classifier_parameter_tuning_results.csv")
 
-        # Update best model if current run has higher validation F1
+        # update best model if current run has higher validation F1
         if test_f1_f1 > best_test_f1:
             best_test_f1 = test_f1_f1
             best_model_state = copy.deepcopy(trained_classifier.state_dict())
             best_params = params
 
-   # After all combinations
+   # after all combinations, save the best model
     if best_model_state is not None:
-        # Save the best model
         torch.save(best_model_state, best_classifier_path)
         print(f"\nBest model saved to {best_classifier_path} with parameters:")
         print(best_params)
     else:
         print("No model was trained.")
 
-    # Save all of the results to a CSV file
+    # save all of the results to a CSV file
     results_df = pd.DataFrame(results)
     results_df.to_csv('all_classifier_parameter_tuning_results.csv', index=False)
     print("All results saved to all_classifier_parameter_tuning_results.csv")

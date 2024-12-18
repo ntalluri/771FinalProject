@@ -1,19 +1,25 @@
+# DAS Event Detection with MAEs
+
 ## Data
-data folder holds all the data we will use
-- to get the data we need, download the zip from the drive
-- unzip it and make sure all of the files are in a folder called Toy_dataset
+the data for this project is located locally on Ellie's lab's drives.
 
 ## Source Code
 
 dataloader.py
-- what this really does is create the dataset from the toy dataset (this will need to be renamed to dataset) 
-- we can make the dataset, with all the postional encodings, paddings, and transformations then put it into a Dataloader
-- easy way to make test, val, and train sets
-
+- creates a custom dataset for the data
 
 mae.py
 - the MAE model itself
 
 train_model.py
-- will call the other two files and train an MAE with the dataset
-- current error about batch size
+- will train an MAE model
+
+finetuning.py
+- finds the optimal parameters for the MAE models
+- saves the model and the encoder
+
+classifier.py
+- will train a binary classifier ontop of the trained encoder from train_model.py
+
+classifier_finetuning.py
+- finds the optimal parameters for the binary classifier

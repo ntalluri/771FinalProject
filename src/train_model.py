@@ -10,6 +10,7 @@ import random
 import datetime
 import numpy as np
 
+# seed initialize
 def set_seed(seed=42):
     random.seed(seed)
     np.random.seed(seed)
@@ -43,7 +44,7 @@ class EarlyStopping:
         self.best_loss = float('inf')
 
     def __call__(self, loss, model):
-        score = -loss  # Since we want to minimize loss
+        score = -loss  # since we want to minimize loss
 
         if self.best_score is None:
             self.best_score = score
@@ -83,13 +84,13 @@ def gather_all_file_paths(root_dirs, exclude_dirs=None):
     if exclude_dirs is None:
         exclude_dirs = set()
     else:
-        # Convert to set for faster lookup
+        # convert to set for faster lookup
         exclude_dirs = set(os.path.abspath(d) for d in exclude_dirs)
     
     file_paths = []
     for root_dir in root_dirs:
         root_dir = os.path.abspath(root_dir)
-        # List immediate subdirectories in the root directory
+        # list immediate subdirectories in the root directory
         try:
             subdirs = [
                 d for d in os.listdir(root_dir)
@@ -315,40 +316,38 @@ print(f"Training files: {len(train_file_paths)}")
 print(f"Validation files: {len(val_file_paths)}")
 print(f"Testing files: {len(test_file_paths)}")
 
-# Create datasets
+# create datasets
 train_dataset = HDF5IterableDataset(train_file_paths, padding_strategy = padding, pos_encoding_method=positional_encodings)
 val_dataset = HDF5IterableDataset(val_file_paths, padding_strategy = padding, pos_encoding_method=positional_encodings)
 test_dataset = HDF5IterableDataset(test_file_paths, padding_strategy = padding, pos_encoding_method=positional_encodings)
  
-# Create data loaders
-# TODO: is this loading all the data prior to training? 
-# TODO: could we load per batch instead. A dataloader per batch?
+# create data loaders
 train_loader = DataLoader(train_dataset, batch_size=batch)
 val_loader = DataLoader(val_dataset, batch_size=batch)
 test_loader = DataLoader(test_dataset, batch_size=batch)
 
-# Determine the directory where this script is located
+# determine the directory where this script is located
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
-# Navigate to the parent directory (project root)
+# navigate to the parent directory (project root)
 project_dir = os.path.abspath(os.path.join(script_dir, os.pardir))
 
-# Define the logs directory path
+# define the logs directory path
 logs_dir = os.path.join(project_dir, 'logs')
 
-# Create the logs directory if it doesn't exist
+# create the logs directory if it doesn't exist
 os.makedirs(logs_dir, exist_ok=True)
 
-# Generate a unique subdirectory name using the current timestamp
+# generate a unique subdirectory name using the current timestamp
 timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 unique_log_dir = os.path.join(logs_dir, f"run_{timestamp}")
 
-# Initialize the TensorBoard SummaryWriter with the unique log directory
+# initialize the TensorBoard SummaryWriter with the unique log directory
 writer = SummaryWriter(log_dir=unique_log_dir)
 
 print(f"TensorBoard logs will be saved to: {unique_log_dir}")
 
-# Initialize EarlyStopping
+# initialize early stopping
 early_stopping = EarlyStopping(patience=3, verbose=True, delta=0.0, path='best_model.pt')
 
 for epoch in range(num_epochs):
@@ -395,7 +394,7 @@ for epoch in range(num_epochs):
     print(f"Epoch {epoch + 1} Training Loss: {train_loss:.4f} Pearson Correlation: {train_corr:.4f}")
     
     
-    # Log training loss to TensorBoard
+    # log training loss to TensorBoard
     writer.add_scalar('Loss/Train', train_loss, epoch + 1)
     writer.add_scalar('Correlation/Train', train_corr, epoch + 1)
 
@@ -427,21 +426,21 @@ for epoch in range(num_epochs):
     val_corr /= max(val_batches, 1)
     print(f"Epoch {epoch + 1} Validation Loss: {val_loss:.4f} Pearson Correlation: {val_corr:.4f}")
     
-    # Log validation loss to TensorBoard
+    # log validation loss to TensorBoard
     writer.add_scalar('Loss/Validation', val_loss, epoch + 1)
     writer.add_scalar('Correlation/Validation', val_corr, epoch + 1)
 
-    # Early Stopping check
+    # early stopping check
     early_stopping(val_loss, model)
 
     if early_stopping.early_stop:
         print("Early stopping triggered. Stopping training.")
         break
 
-# After training is complete, load the best saved model
+# after training is complete, load the best saved model
 print("Training complete. Loading the best saved model for testing.")
 
-# Initialize a new MAEModel instance (same architecture)
+# initialize a new MAEModel instance (same architecture)
 best_model = MAEModel(
     input_dim=REQUIRED_COLUMNS,
     embed_dim=embedding_dim,
@@ -449,18 +448,18 @@ best_model = MAEModel(
     depth=layers
 )
 
-# Handle DataParallel wrapping
+# handle DataParallel wrapping
 if torch.cuda.device_count() >= 1:
     best_model = nn.DataParallel(best_model)
 
 best_model.to(device)
 
-# Load the saved state_dict
+# load the saved state_dict
 best_model_path = 'best_model.pt'
 best_model.load_state_dict(torch.load(best_model_path, map_location=device, weights_only=True))
 print("Best model loaded successfully.")
 
-# Final Evaluation on Test Set using the loaded best MAE model
+# final Evaluation on Test Set using the loaded best MAE model
 best_model.eval()
 test_loss = 0.0
 test_corr = 0.0
@@ -470,16 +469,15 @@ with torch.no_grad():
         batch_data = batch_data.to(device)
         row_mask = generate_row_mask(batch_data.size(0), MAX_ROWS, mask_ratio).to(device)
         reconstructed = best_model(batch_data, row_mask)
-        # reconstructed.to(device)
         
-        # Compute loss
+        # compute loss
         loss = criterion(
             reconstructed[row_mask.unsqueeze(-1).expand_as(reconstructed)],
             batch_data[row_mask.unsqueeze(-1).expand_as(batch_data)]
         )
         test_loss += loss.item()
         
-        # Compute Pearson correlation
+        # compute Pearson correlation
         corr = compute_batch_pearson_correlation(reconstructed, batch_data, row_mask)
         test_corr += corr
         
@@ -489,19 +487,19 @@ test_loss /= max(test_batches, 1)
 test_corr /= max(test_batches, 1)
 print(f"Final Test Loss: {test_loss:.4f} Pearson Correlation: {test_corr:.4f}")
 
-# Log final test metrics to TensorBoard
+# log final test metrics to TensorBoard
 writer.add_scalar('Loss/Test', test_loss, epoch + 1)
 writer.add_scalar('Correlation/Test', test_corr, epoch + 1)
 
-# Extract the encoder from the loaded best model and save its state_dict separately
+# extract the encoder from the loaded best model and save its state_dict separately
 print("Extracting the encoder from the best model.")
 
-# Access the encoder
+# access the encoder
 if hasattr(best_model, 'module'):
     best_model = best_model.module
 encoder = best_model.encoder
 
-# Initialize a new Encoder instance with the same architecture
+# initialize a new Encoder instance with the same architecture
 encoder_model = Encoder(
     input_dim=best_model.input_dim,
     embed_dim=best_model.embed_dim,
@@ -509,15 +507,15 @@ encoder_model = Encoder(
     depth=best_model.depth
 ).to(device)
 
-# Load the encoder's state_dict into the encoder_model
+# load the encoder's state_dict into the encoder_model
 encoder_model.load_state_dict(encoder.state_dict())
 encoder_model.eval()
 print("Encoder extracted successfully.")
 
-# Save the encoder's state_dict
+# save the encoder's state_dict
 save_path = "trained_encoder_state_dict.pt"
 torch.save(encoder_model.state_dict(), save_path)
 print(f"Trained encoder's state_dict saved to {save_path}")
 
-# Close the TensorBoard writer
+# close the TensorBoard writer
 writer.close()

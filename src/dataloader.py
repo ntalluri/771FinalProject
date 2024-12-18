@@ -7,8 +7,7 @@ from torch.utils.data import IterableDataset
 from itertools import cycle
 import random
 
-# Constants for data dimensions
-# Constants for data dimensions
+# constants for data dimensions
 MIN_ROWS = 1357
 MAX_ROWS = 1387
 REQUIRED_COLUMNS = 30000
@@ -82,7 +81,7 @@ class HDF5IterableDataset(IterableDataset):
                 'level_min': 0.001,
                 'level_max': 0.02
             },
-            'row_shift': {  # Changed from 'row_swap' to 'row_shift'
+            'row_shift': {
                 'apply_prob': 0.5,
                 'shift_max_min': 1,
                 'shift_max_max': 10
@@ -94,11 +93,11 @@ class HDF5IterableDataset(IterableDataset):
             }
         }
 
-        # Validate mode
+        # validate mode
         if self.mode not in ['train', 'val', 'test']:
             raise ValueError("Mode should be one of 'train', 'val', or 'test'.")
 
-        # Separate positive and negative files
+        # separate positive and negative files
         if self.labels_dict is not None:
             self.positive_files = [f for f in self.file_paths if self.labels_dict.get(os.path.basename(f), 0) == 1]
             self.negative_files = [f for f in self.file_paths if self.labels_dict.get(os.path.basename(f), 0) == 0]
@@ -109,20 +108,20 @@ class HDF5IterableDataset(IterableDataset):
                 if not self.negative_files:
                     raise ValueError("No negative samples found in the provided file paths.")
             else:
-                # For validation and test, ensure all positive and negative samples are included
+                # for validation and test, ensure all positive and negative samples are included
                 if not self.positive_files and not self.negative_files:
                     raise ValueError("No samples found in the provided file paths.")
         else:
             self.positive_files = []
             self.negative_files = self.file_paths.copy()
 
-        # Initialize cycling iterator for positive samples if in training mode and oversampling is desired
+        # initialize cycling iterator for positive samples if in training mode and oversampling is desired
         if self.mode == 'train' and self.positive_files:
             self.positive_iter = cycle(self.positive_files)
         else:
             self.positive_iter = iter([])  # Empty iterator
 
-        # Precompute position encoding matrices for GPU
+        # precompute position encoding matrices for GPU
         self.pos_encoding_cache = self._prepare_pos_encoding()
 
     def _prepare_pos_encoding(self):
@@ -200,21 +199,21 @@ class HDF5IterableDataset(IterableDataset):
         Returns:
             torch.Tensor: Augmented data
         """
-        # Noise Augmentation
+        # noise Augmentation
         noise_config = self.augmentations.get('noise', {})
         if noise_config.get('apply_prob', 0.0) > 0.0:
             if random.random() < noise_config['apply_prob']:
                 noise_level = random.uniform(noise_config['level_min'], noise_config['level_max'])
                 data = self.add_random_noise(data, noise_level)
 
-        # Row Shift Augmentation
+        # row Shift Augmentation
         row_shift_config = self.augmentations.get('row_shift', {})
         if row_shift_config.get('apply_prob', 0.0) > 0.0:
             if random.random() < row_shift_config['apply_prob']:
                 shift_max = random.randint(row_shift_config['shift_max_min'], row_shift_config['shift_max_max'])
                 data = self.row_shift(data, shift_max)
 
-        # Column Shift Augmentation
+        # column Shift Augmentation
         column_shift_config = self.augmentations.get('column_shift', {})
         if column_shift_config.get('apply_prob', 0.0) > 0.0:
             if random.random() < column_shift_config['apply_prob']:
@@ -254,18 +253,18 @@ class HDF5IterableDataset(IterableDataset):
                         raise ValueError(f"Positive file {file_path} does not meet size requirements.")
                     return None
 
-                # Perform CPU-bound operations first
+                # perform CPU-bound operations first
                 data_detrend = signal.detrend(raw_data_np, type='linear')
                 sos = signal.butter(5, [20, 100], 'bandpass', fs=fs, output='sos')
                 data_filtered = signal.sosfilt(sos, data_detrend)
                 
-                # Convert to tensor and move to GPU for remaining operations
+                # convert to tensor and move to GPU for remaining operations
                 data_tensor = torch.tensor(data_filtered, dtype=torch.float32, device=self.device)
                 
-                # Normalize on GPU
+                # normalize on GPU
                 data_normalized = (data_tensor - data_tensor.mean()) / (data_tensor.std() + 1e-8)
                 
-                # Padding on GPU
+                # padding on GPU
                 if rows < MAX_ROWS:
                     padding_rows = MAX_ROWS - rows
                     if self.padding_strategy == 'zero':
@@ -292,10 +291,7 @@ class HDF5IterableDataset(IterableDataset):
                 else:
                     data_padded = data_normalized
 
-                # **Do not add positional encoding here**
-                # data_with_pos = data_padded + self.pos_encoding_cache if self.pos_encoding_method == 'add' else torch.cat([data_padded, self.pos_encoding_cache], dim=1)
-
-                # Get label if labels_dict is provided
+                # cet label if labels_dict is provided
                 if self.labels_dict is not None:
                     filename = os.path.basename(file_path)
                     label = self.labels_dict.get(filename, 0)  # Default to 0 if not found
@@ -320,14 +316,14 @@ class HDF5IterableDataset(IterableDataset):
         """
         if self.labels_dict is not None:
             if self.mode == 'train':
-                # Iterate through negative files
+                # iterate through negative files
                 for neg_file in self.negative_files:
                     try:
                         neg_sample = self.process_file(neg_file)
                         if neg_sample is not None:
                             data, label = neg_sample
-                            # No augmentations for negative samples
-                            # Add positional encoding
+                            # no augmentations for negative samples
+                            # add positional encoding
                             if self.pos_encoding_method == 'add':
                                 data_with_pos = data + self.pos_encoding_cache
                             else:  # 'concat'
@@ -337,7 +333,7 @@ class HDF5IterableDataset(IterableDataset):
                         print(f"Skipping negative file {neg_file} due to error: {e}")
                         continue
 
-                    # Oversample positive samples
+                    # oversample positive samples
                     if self.positive_files:
                         try:
                             pos_file = next(self.positive_iter)
@@ -346,7 +342,7 @@ class HDF5IterableDataset(IterableDataset):
                                 data, label = pos_sample
                                 if self.augment_positive:
                                     data = self.apply_augmentations(data)
-                                # Add positional encoding after augmentations
+                                # add positional encoding after augmentations
                                 if self.pos_encoding_method == 'add':
                                     data_with_pos = data + self.pos_encoding_cache
                                 else:  # 'concat'
@@ -356,14 +352,14 @@ class HDF5IterableDataset(IterableDataset):
                             print(f"Error processing positive file {pos_file}: {e}")
                             continue
             else:
-                # For 'val' and 'test' modes, yield all samples without oversampling or augmentations
+                # for 'val' and 'test' modes, yield all samples without oversampling or augmentations
                 for file_path in self.file_paths:
                     try:
                         sample = self.process_file(file_path)
                         if sample is not None:
                             data = sample[0]
                             label = sample[1] if len(sample) > 1 else None
-                            # Add positional encoding
+                            # add positional encoding
                             if self.pos_encoding_method == 'add':
                                 data_with_pos = data + self.pos_encoding_cache
                             else:  # 'concat'
@@ -376,12 +372,12 @@ class HDF5IterableDataset(IterableDataset):
                         print(f"Skipping file {file_path} due to error: {e}")
                         continue
         else:
-            # If no labels, yield normally
+            # if no labels, yield normally
             for file_path in self.file_paths:
                 try:
                     data = self.process_file(file_path)
                     if data is not None:
-                        # Add positional encoding
+                        # add positional encoding
                         if self.pos_encoding_method == 'add':
                             data_with_pos = data + self.pos_encoding_cache
                         else:  # 'concat'
