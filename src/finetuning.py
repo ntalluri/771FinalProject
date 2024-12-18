@@ -51,8 +51,6 @@ folder_paths = [
     "/media/jesse/sdb/Organized_SURF/seis_sensor_processed_20220509_11",
 ]
 
-# folder_paths = ["data/Toy_dataset"]
-
 all_file_paths = []
 for subdir_path in folder_paths:
     # list files ending with '.h5' in the current subdirectory
@@ -80,35 +78,6 @@ val_file_paths = all_file_paths[train_end:]
 
 
 # function to compute Pearson correlation coefficient
-# TODO: I have no idea if this will work
-# def compute_batch_pearson_correlation(reconstructed, batch_data, row_mask):
-#     # reconstructed and batch_data are tensors of shape [batch_size, MAX_ROWS, REQUIRED_COLUMNS]
-#     # row_mask is of shape [batch_size, MAX_ROWS]
-#     # We want to compute the Pe=arson correlation over the masked positions
-#     # For each sample in the batch, we select the masked rows
-#     batch_size = reconstructed.size(0)
-#     correlations = []
-#     for i in range(batch_size):
-#         mask = row_mask[i]  # shape: [MAX_ROWS]
-#         x = reconstructed[i][mask]  # shape: [num_masked_rows, REQUIRED_COLUMNS]
-#         y = batch_data[i][mask]     # same shape
-#         if x.numel() == 0:
-#             continue  # skip samples with no masked rows
-#         x_flat = x.flatten()
-#         y_flat = y.flatten()
-#         # Compute Pearson correlation between x_flat and y_flat
-#         x_mean = torch.mean(x_flat)
-#         y_mean = torch.mean(y_flat)
-#         x_centered = x_flat - x_mean
-#         y_centered = y_flat - y_mean
-#         numerator = torch.sum(x_centered * y_centered)
-#         denominator = torch.sqrt(torch.sum(x_centered ** 2)) * torch.sqrt(torch.sum(y_centered ** 2))
-#         correlation = numerator / (denominator + 1e-8)  # add epsilon to prevent division by zero
-#         correlations.append(correlation.item())
-#     if correlations:
-#         return sum(correlations) / len(correlations)
-#     else:
-#         return 0.0
 def compute_batch_pearson_correlation(reconstructed, batch_data, row_mask):
     batch_size = reconstructed.size(0)
     correlations = []
@@ -147,7 +116,6 @@ def train_and_evaluate(params, train_loader, val_loader):
     
     print(f"Training with parameters: {params}")
     
-    # TODO make this work for mutliple gpus
     # init model, criterion, optimizer
     model = MAEModel(
         input_dim=REQUIRED_COLUMNS,
@@ -163,15 +131,6 @@ def train_and_evaluate(params, train_loader, val_loader):
         model = nn.DataParallel(model)
     else:
         print("No GPUs, using CPUs")
-
-    # device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-    # if device.type == "mps":
-    #     print(f"MPS Available: {torch.backends.mps.is_available()}")
-    #     # Check if MPS is built into PyTorch
-    #     print(f"MPS Built: {torch.backends.mps.is_built()}")
-    #     print("Using GPU with MPS backend.")
-    # else:
-    #     print("Using CPU (MPS backend not available).")
 
     model.to(device)
     criterion = nn.MSELoss()
@@ -246,7 +205,6 @@ param_names = list(param_grid.keys())
 # store all the results
 results = []
 best_val_loss = float('inf')
-# best_val_corr = float('-inf')
 best_model = None
 best_params = None
 
@@ -303,12 +261,6 @@ for param_values in param_combinations[8:]:  # Skip the first 8 combinations
         best_val_loss = val_loss
         best_model = model
         best_params = params
-
-    # Save the best model based on validation correlation
-    # if val_corr > best_val_corr:
-    #     best_val_corr = val_corr
-    #     best_model = model
-    #     best_params = params
 
 # save the best model
 model_save_path = "best_trained_mae_model.pt"

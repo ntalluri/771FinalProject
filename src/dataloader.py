@@ -8,7 +8,6 @@ from itertools import cycle
 import random
 
 # Constants for data dimensions
-# Constants for data dimensions
 MIN_ROWS = 1357
 MAX_ROWS = 1387
 REQUIRED_COLUMNS = 30000
@@ -82,7 +81,7 @@ class HDF5IterableDataset(IterableDataset):
                 'level_min': 0.001,
                 'level_max': 0.02
             },
-            'row_shift': {  # Changed from 'row_swap' to 'row_shift'
+            'row_shift': {
                 'apply_prob': 0.5,
                 'shift_max_min': 1,
                 'shift_max_max': 10
@@ -291,10 +290,7 @@ class HDF5IterableDataset(IterableDataset):
                     data_padded = torch.cat([data_normalized, padding], dim=0)
                 else:
                     data_padded = data_normalized
-
-                # **Do not add positional encoding here**
-                # data_with_pos = data_padded + self.pos_encoding_cache if self.pos_encoding_method == 'add' else torch.cat([data_padded, self.pos_encoding_cache], dim=1)
-
+                    
                 # Get label if labels_dict is provided
                 if self.labels_dict is not None:
                     filename = os.path.basename(file_path)
