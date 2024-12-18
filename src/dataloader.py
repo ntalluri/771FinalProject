@@ -54,10 +54,10 @@ class HDF5IterableDataset(IterableDataset):
                         'level_min': 0.001,
                         'level_max': 0.02
                     },
-                    'row_swap': {
+                    'row_shift': {  # Changed from 'row_swap' to 'row_shift'
                         'apply_prob': 0.5,
-                        'swap_prob_min': 0.3,
-                        'swap_prob_max': 0.7
+                        'shift_max_min': 1,
+                        'shift_max_max': 10
                     },
                     'column_shift': {
                         'apply_prob': 0.5,
@@ -81,10 +81,10 @@ class HDF5IterableDataset(IterableDataset):
                 'level_min': 0.001,
                 'level_max': 0.02
             },
-            'row_swap': {
+            'row_shift': {  # Changed from 'row_swap' to 'row_shift'
                 'apply_prob': 0.5,
-                'swap_prob_min': 0.3,
-                'swap_prob_max': 0.7
+                'shift_max_min': 1,
+                'shift_max_max': 10
             },
             'column_shift': {
                 'apply_prob': 0.5,
@@ -150,23 +150,24 @@ class HDF5IterableDataset(IterableDataset):
         noise = torch.randn_like(data) * noise_level
         return data + noise
 
-    def random_row_swap(self, data, swap_prob):
+    def row_shift(self, data, shift_max):
         """
-        Randomly swap pairs of rows in the data.
+        Randomly shift rows up or down by up to shift_max positions.
+        Performs a circular shift so that rows shifted off one end reappear on the other.
 
         Args:
             data (torch.Tensor): Input data tensor
-            swap_prob (float): Probability of swapping each pair
+            shift_max (int): Maximum number of positions to shift
 
         Returns:
-            torch.Tensor: Data with randomly swapped rows
+            torch.Tensor: Data with circularly shifted rows
         """
-        rows, cols = data.shape
-        for i in range(rows - 1):
-            if random.random() < swap_prob:
-                j = random.randint(i + 1, rows - 1)
-                data[[i, j]] = data[[j, i]]
-        return data
+        shift = random.randint(-shift_max, shift_max)
+        if shift == 0:
+            return data
+        # Perform circular shift using torch.roll
+        shifted_data = torch.roll(data, shifts=shift, dims=0)
+        return shifted_data
 
     def column_shift(self, data, shift_max):
         """
@@ -205,12 +206,12 @@ class HDF5IterableDataset(IterableDataset):
                 noise_level = random.uniform(noise_config['level_min'], noise_config['level_max'])
                 data = self.add_random_noise(data, noise_level)
 
-        # Row Swap Augmentation
-        row_swap_config = self.augmentations.get('row_swap', {})
-        if row_swap_config.get('apply_prob', 0.0) > 0.0:
-            if random.random() < row_swap_config['apply_prob']:
-                swap_prob = random.uniform(row_swap_config['swap_prob_min'], row_swap_config['swap_prob_max'])
-                data = self.random_row_swap(data, swap_prob)
+        # Row Shift Augmentation
+        row_shift_config = self.augmentations.get('row_shift', {})
+        if row_shift_config.get('apply_prob', 0.0) > 0.0:
+            if random.random() < row_shift_config['apply_prob']:
+                shift_max = random.randint(row_shift_config['shift_max_min'], row_shift_config['shift_max_max'])
+                data = self.row_shift(data, shift_max)
 
         # Column Shift Augmentation
         column_shift_config = self.augmentations.get('column_shift', {})
@@ -225,7 +226,15 @@ class HDF5IterableDataset(IterableDataset):
         """
         Process a single HDF5 file with GPU acceleration where beneficial.
         CPU is used for I/O and initial signal processing, GPU for later stages.
-        Returns both processed data and label if labels_dict is provided.
+        Returns the processed data tensor and label if labels_dict is provided.
+
+        Positional encodings are **not** added here anymore and should be applied after augmentations.
+
+        Args:
+            file_path (str): Path to the HDF5 file
+
+        Returns:
+            tuple or torch.Tensor: (data_tensor, label) if labels_dict is provided, else data_tensor
         """
         try:
             with h5py.File(file_path, 'r') as file:
@@ -282,20 +291,17 @@ class HDF5IterableDataset(IterableDataset):
                 else:
                     data_padded = data_normalized
 
-                # Apply positional encoding on GPU
-                if self.pos_encoding_method == 'add':
-                    data_with_pos = data_padded + self.pos_encoding_cache
-                else:  # 'concat'
-                    data_with_pos = torch.cat([data_padded, self.pos_encoding_cache], dim=1)
+                # **Do not add positional encoding here**
+                # data_with_pos = data_padded + self.pos_encoding_cache if self.pos_encoding_method == 'add' else torch.cat([data_padded, self.pos_encoding_cache], dim=1)
 
                 # Get label if labels_dict is provided
                 if self.labels_dict is not None:
                     filename = os.path.basename(file_path)
                     label = self.labels_dict.get(filename, 0)  # Default to 0 if not found
                     label_tensor = torch.tensor(label, dtype=torch.float32, device=self.device)
-                    return data_with_pos, label_tensor
+                    return data_padded, label_tensor
                 
-                return data_with_pos
+                return data_padded
 
         except Exception as e:
             print(f"Error processing file {file_path}: {e}")
@@ -306,6 +312,10 @@ class HDF5IterableDataset(IterableDataset):
         Iterate through the dataset, yielding processed tensors and labels if available.
         Implements oversampling of positive samples and applies augmentations only in training mode.
         Robustly handles exceptions to ensure the iterator continues despite individual file errors.
+        Positional encodings are applied after augmentations.
+
+        Yields:
+            tuple or torch.Tensor: (data_with_pos, label) if labels_dict is provided, else data_with_pos
         """
         if self.labels_dict is not None:
             if self.mode == 'train':
@@ -314,7 +324,14 @@ class HDF5IterableDataset(IterableDataset):
                     try:
                         neg_sample = self.process_file(neg_file)
                         if neg_sample is not None:
-                            yield neg_sample
+                            data, label = neg_sample
+                            # No augmentations for negative samples
+                            # Add positional encoding
+                            if self.pos_encoding_method == 'add':
+                                data_with_pos = data + self.pos_encoding_cache
+                            else:  # 'concat'
+                                data_with_pos = torch.cat([data, self.pos_encoding_cache], dim=1)
+                            yield data_with_pos, label
                     except Exception as e:
                         print(f"Skipping negative file {neg_file} due to error: {e}")
                         continue
@@ -324,11 +341,16 @@ class HDF5IterableDataset(IterableDataset):
                         try:
                             pos_file = next(self.positive_iter)
                             pos_sample = self.process_file(pos_file)
-                            if pos_sample is not None and self.augment_positive:
+                            if pos_sample is not None:
                                 data, label = pos_sample
-                                data = self.apply_augmentations(data)
-                                pos_sample = (data, label)
-                                yield pos_sample
+                                if self.augment_positive:
+                                    data = self.apply_augmentations(data)
+                                # Add positional encoding after augmentations
+                                if self.pos_encoding_method == 'add':
+                                    data_with_pos = data + self.pos_encoding_cache
+                                else:  # 'concat'
+                                    data_with_pos = torch.cat([data, self.pos_encoding_cache], dim=1)
+                                yield data_with_pos, label
                         except Exception as e:
                             print(f"Error processing positive file {pos_file}: {e}")
                             continue
@@ -338,7 +360,17 @@ class HDF5IterableDataset(IterableDataset):
                     try:
                         sample = self.process_file(file_path)
                         if sample is not None:
-                            yield sample
+                            data = sample[0]
+                            label = sample[1] if len(sample) > 1 else None
+                            # Add positional encoding
+                            if self.pos_encoding_method == 'add':
+                                data_with_pos = data + self.pos_encoding_cache
+                            else:  # 'concat'
+                                data_with_pos = torch.cat([data, self.pos_encoding_cache], dim=1)
+                            if label is not None:
+                                yield data_with_pos, label
+                            else:
+                                yield data_with_pos
                     except Exception as e:
                         print(f"Skipping file {file_path} due to error: {e}")
                         continue
@@ -346,9 +378,14 @@ class HDF5IterableDataset(IterableDataset):
             # If no labels, yield normally
             for file_path in self.file_paths:
                 try:
-                    sample = self.process_file(file_path)
-                    if sample is not None:
-                        yield sample
+                    data = self.process_file(file_path)
+                    if data is not None:
+                        # Add positional encoding
+                        if self.pos_encoding_method == 'add':
+                            data_with_pos = data + self.pos_encoding_cache
+                        else:  # 'concat'
+                            data_with_pos = torch.cat([data, self.pos_encoding_cache], dim=1)
+                        yield data_with_pos
                 except Exception as e:
                     print(f"Skipping file {file_path} due to error: {e}")
                     continue

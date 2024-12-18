@@ -7,7 +7,7 @@ from torch.utils.data import DataLoader
 from dataloader import HDF5IterableDataset  # Ensure correct import path
 from MAE import Encoder  # Ensure correct import path
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import f1_score, accuracy_score, recall_score, precision_score
+from sklearn.metrics import f1_score, accuracy_score, recall_score, precision_score, precision_recall_curve
 import pandas as pd
 import random
 import datetime
@@ -35,7 +35,7 @@ class EarlyStopping:
     """
     Early stops the training if the monitored metric does not improve after a given patience.
     """
-    def __init__(self, patience=3, verbose=False, delta=0.0, path='best_classifier.pt', mode='max'):
+    def __init__(self, patience=3, verbose=False, delta=0.0, path='best_val_loss_model.pt', mode='min'):
         """
         Args:
             patience (int): How long to wait after last time monitored metric improved.
@@ -53,14 +53,32 @@ class EarlyStopping:
         self.counter = 0
         self.best_score = None
         self.early_stop = False
-        self.best_metric = -float('inf') if mode == 'max' else float('inf')
+        self.best_metric = float('inf') if mode == 'min' else -float('inf')
+        
+        self.optimal_threshold = 0.5
 
-    def __call__(self, metric, model):
-        if self.mode == 'max':
+    def __call__(self, metric, model, optimal_threshold=0.5):
+        if self.mode == 'min':
             score = metric
             if self.best_score is None:
                 self.best_score = score
-                self.save_checkpoint(metric, model)
+                self.save_checkpoint(metric, model, optimal_threshold)
+            elif score > self.best_score - self.delta:
+                self.counter += 1
+                if self.verbose:
+                    print(f'EarlyStopping counter: {self.counter} out of {self.patience}')
+                if self.counter >= self.patience:
+                    self.early_stop = True
+            else:
+                self.best_score = score
+                self.save_checkpoint(metric, model, optimal_threshold)
+                self.counter = 0
+        else:
+            # Existing 'max' mode for metrics like F1 score
+            score = metric
+            if self.best_score is None:
+                self.best_score = score
+                self.save_checkpoint(metric, model, optimal_threshold)
             elif score < self.best_score + self.delta:
                 self.counter += 1
                 if self.verbose:
@@ -69,31 +87,16 @@ class EarlyStopping:
                     self.early_stop = True
             else:
                 self.best_score = score
-                self.save_checkpoint(metric, model)
-                self.counter = 0
-        else:
-            # Existing 'min' mode for loss
-            score = metric
-            if self.best_score is None:
-                self.best_score = score
-                self.save_checkpoint(metric, model)
-            elif score > self.best_score + self.delta:
-                self.counter += 1
-                if self.verbose:
-                    print(f'EarlyStopping counter: {self.counter} out of {self.patience}')
-                if self.counter >= self.patience:
-                    self.early_stop = True
-            else:
-                self.best_score = score
-                self.save_checkpoint(metric, model)
+                self.save_checkpoint(metric, model, optimal_threshold)
                 self.counter = 0
 
-    def save_checkpoint(self, metric, model):
+    def save_checkpoint(self, metric, model, optimal_threshold):
         '''Saves the model when the monitored metric improves.'''
         if self.verbose:
             print(f'Validation metric improved to {metric:.6f}. Saving model ...')
         torch.save(model.state_dict(), self.path)
         self.best_metric = metric
+        self.optimal_threshold = optimal_threshold
 
 # ---------------------------
 # 3. Binary Classifier Definition
@@ -123,7 +126,6 @@ class BinaryClassifier(nn.Module):
 
         # Pass the pooled vector through the classifier
         out = self.classifier(pooled).squeeze(1)
-        # out = out.view(-1)  # Flatten to (batch_size,)
         return out
 
 # ---------------------------
@@ -161,6 +163,14 @@ def compute_metrics(y_true, y_pred):
     precision = precision_score(y_true, y_pred)
     return acc, f1, recall, precision
 
+def find_optimal_threshold(y_true, y_probs):
+    precision, recall, thresholds = precision_recall_curve(y_true, y_probs)
+    f1_scores = 2 * (precision * recall) / (precision + recall + 1e-8)
+    optimal_idx = np.argmax(f1_scores)
+    optimal_threshold = thresholds[optimal_idx] if optimal_idx < len(thresholds) else 0.5
+    best_f1 = f1_scores[optimal_idx] if optimal_idx < len(f1_scores) else f1_scores[-1]
+    return optimal_threshold, best_f1
+
 # ---------------------------
 # 5. Training Function
 # ---------------------------
@@ -183,13 +193,19 @@ def train_classifier(model, train_loader, val_loader, num_epochs=10, patience=3,
     if pos_weight_tensor is not None:
         criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight_tensor)
     else:
+        print("Not using pos_weight")
         criterion = nn.BCEWithLogitsLoss()
     optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=lr, weight_decay=weight_decay)
     
-    # Initialize EarlyStopping to monitor F1 score
+    # Initialize EarlyStopping to monitor validation loss
     early_stopping = EarlyStopping(patience=patience, verbose=True, 
-                                   delta=0.0, path='best_classifier.pt', mode='max')
+                                   delta=0.0, path='best_val_loss_model.pt', mode='min')
     
+    # Variables to track the best F1 score
+    best_f1 = -float('inf')
+    best_f1_threshold = 0.5
+    best_f1_model_path = 'best_f1_model.pt'
+
     for epoch in range(num_epochs):
         print(f"Epoch {epoch + 1}/{num_epochs}")
         
@@ -232,6 +248,7 @@ def train_classifier(model, train_loader, val_loader, num_epochs=10, patience=3,
         model.eval()
         val_loss = 0.0
         val_preds = []
+        val_probs = []
         val_labels = []
         val_batches = 0
 
@@ -243,14 +260,19 @@ def train_classifier(model, train_loader, val_loader, num_epochs=10, patience=3,
                     loss = criterion(outputs, labels)
 
                     val_loss += loss.item()
-                    predictions = (torch.sigmoid(outputs) >= 0.5).float()
+                    prob = torch.sigmoid(outputs)
+                    predictions = (prob >= 0.5).float()
 
                     val_preds.extend(predictions.cpu().numpy())
+                    val_probs.extend(prob.cpu().numpy())
                     val_labels.extend(labels.cpu().numpy())
                     val_batches += 1
                 except Exception as e:
                     print(f"Error during validation batch {batch_idx}: {e}")
                     continue
+
+        optimal_threshold, current_best_f1 = find_optimal_threshold(val_labels, val_probs)
+        print(f"Optimal Threshold: {optimal_threshold}, Best F1 Score: {current_best_f1}")
 
         avg_val_loss = val_loss / max(val_batches, 1)
         val_acc, val_f1, val_recall, val_precision = compute_metrics(val_labels, val_preds)
@@ -271,49 +293,70 @@ def train_classifier(model, train_loader, val_loader, num_epochs=10, patience=3,
             writer.add_scalar('F1/Validation', val_f1, epoch + 1)
             writer.add_scalar('Recall/Validation', val_recall, epoch + 1)
             writer.add_scalar('Precision/Validation', val_precision, epoch + 1)
+            
+            writer.add_scalar('F1/Best', current_best_f1, epoch + 1)
+            writer.add_scalar('Optimal_Threshold', optimal_threshold, epoch + 1)
 
-        # Early Stopping Check based on F1 score
-        early_stopping(val_f1, model)
+        # Early Stopping Check based on validation loss
+        early_stopping(avg_val_loss, model, optimal_threshold)
+
+        # Check if current F1 is the best
+        if current_best_f1 > best_f1:
+            best_f1 = current_best_f1
+            best_f1_threshold = optimal_threshold
+            torch.save(model.state_dict(), best_f1_model_path)
+            print(f"New best F1 score: {best_f1:.4f}. Model saved to {best_f1_model_path}")
 
         if early_stopping.early_stop:
             print("Early stopping triggered. Stopping training.")
             break
 
-    # Load the best model
-    print("Loading the best model from early stopping...")
-    model.load_state_dict(torch.load('best_classifier.pt'))
-    return model
+    # Load the best validation loss model
+    print("Loading the best model based on validation loss...")
+    model.load_state_dict(torch.load('best_val_loss_model.pt'))
+    best_val_loss_threshold = early_stopping.optimal_threshold
+    print(f"Best validation loss model threshold: {best_val_loss_threshold}")
+
+    return model, best_val_loss_threshold, best_f1_threshold, best_f1_model_path
 
 # ---------------------------
 # 6. Evaluation Function
 # ---------------------------
-def evaluate_model(model, test_loader):
+def evaluate_model(model, test_loader, threshold=0.5):
     """
     Evaluate the model on the test set.
 
     Args:
         model (nn.Module): The trained model.
         test_loader (DataLoader): DataLoader for test data.
+        threshold (float): Threshold for converting probabilities to binary predictions.
 
     Returns:
         tuple: (accuracy, f1_score, recall, precision)
     """
+    print(f"Testing with a threshold of {threshold}")
     model.eval()
     test_preds = []
     test_labels = []
+    test_probs = []
 
     with torch.no_grad():
         for batch_idx, (data, labels) in enumerate(test_loader):
             try:
                 data, labels = data.to(device), labels.to(device).float()
                 outputs = model(data)
-                predictions = (torch.sigmoid(outputs) >= 0.5).float()
+                prob = torch.sigmoid(outputs)
+                predictions = (prob >= threshold).float()
 
                 test_preds.extend(predictions.cpu().numpy())
                 test_labels.extend(labels.cpu().numpy())
+                test_probs.extend(prob.cpu().numpy())
             except Exception as e:
                 print(f"Error during test batch {batch_idx}: {e}")
                 continue
+            
+    optimal_threshold, best_f1 = find_optimal_threshold(test_labels, test_probs)
+    print(f"Optimal Threshold: {optimal_threshold}, Best F1 Score: {best_f1}")        
 
     test_acc, test_f1, test_recall, test_precision = compute_metrics(test_labels, test_preds)
     print("\nTest Results:")
@@ -339,23 +382,23 @@ if __name__ == "__main__":
 
     # Hyperparameters
     batch_size = 6
-    num_epochs = 4
+    num_epochs = 10
     input_dim = 512    # Ensure this matches your trained encoder
     number_heads = 8       # Ensure this matches your trained encoder
     layers = 4             # Ensure this matches your trained encoder
     
-    file_prop = 0.1  # Proportion of negative samples to keep
+    file_prop = 0.01  # Proportion of negative samples to keep
 
     param_grid = {
-      'learning_rate': [1e-4, 1e-3],
-      'freeze_encoder': [True, False],
-      'weight_decay': [1e-5, 1e-4],
+      'learning_rate': [1e-4],
+      'freeze_encoder': [False],
+      'weight_decay': [1e-4],
       'use_pos_weight': [True, False],
       'embeddings': [
-          [128, 64],
-          [256],
-          [256, 128],
-          [256, 128, 64],
+           # [128, 64],
+           [256],
+          # [256, 128],
+          # [256, 128, 64],
         ]
       }
       
@@ -438,14 +481,14 @@ if __name__ == "__main__":
             'level_min': 0.001,       # Minimum noise level
             'level_max': 0.02         # Maximum noise level
         },
-        'row_swap': {
-            'apply_prob': 0.5,        # 50% chance to apply row swap
-            'swap_prob_min': 0.3,     # Minimum swap probability
-            'swap_prob_max': 0.7      # Maximum swap probability
-        },
+        'row_shift': {  # Changed from 'row_swap' to 'row_shift'
+                'apply_prob': 0.5,
+                'shift_max_min': 1,
+                'shift_max_max': 693
+            },
         'column_shift': {
             'apply_prob': 0.5,        # 50% chance to apply column shift
-            'shift_max_min': 1000,       # Minimum shift value
+            'shift_max_min': 1,       # Minimum shift value
             'shift_max_max': 15000       # Maximum shift value
         }
     }
@@ -533,7 +576,7 @@ if __name__ == "__main__":
     
         encoder_model.to(device)
         encoder_model.eval()  # Set encoder to evaluation mode
-    
+
         # Initialize the Binary Classifier
         classifier_model = BinaryClassifier(
             encoder=encoder_model,
@@ -541,7 +584,7 @@ if __name__ == "__main__":
             embeddings=embeddings,
             freeze_encoder=freeze_encoder  # Set to False if you want to fine-tune the encoder
         )
-    
+
         # If using multiple GPUs, wrap only the classifier_model
         if torch.cuda.device_count() > 1:
             print(f"Using {torch.cuda.device_count()} GPUs for the classifier!")
@@ -562,23 +605,41 @@ if __name__ == "__main__":
         writer = SummaryWriter(log_dir=unique_log_dir)
         print(f"TensorBoard logs will be saved to: {unique_log_dir}")
 
-        if not pos_weight:
-          pos_weight = None
+        if not use_pos_weight:
+            pos_weight_tensor = None
+        else:
+            pos_weight_tensor = pos_weight
 
         # 14. Train the Classifier
-        trained_classifier = train_classifier(
+        trained_classifier, best_val_loss_threshold, best_f1_threshold, best_f1_model_path = train_classifier(
             model=classifier_model,
             train_loader=train_loader,
             val_loader=val_loader,
             num_epochs=num_epochs,
-            patience=3,  # Adjust patience as needed
-            pos_weight_tensor=pos_weight,  # Pass the computed pos_weight
+            patience=5,  # Adjust patience as needed
+            pos_weight_tensor=pos_weight_tensor,  # Pass the computed pos_weight
             weight_decay = weight_decay,
             lr = learning_rate,
             writer=writer  # Pass the TensorBoard writer
         )
 
-        test_acc, test_f1, test_recall, test_precision = evaluate_model(trained_classifier, test_loader)
+        # Evaluate the model with the best validation loss
+        print("\nEvaluating model with best validation loss:")
+        val_loss_model = copy.deepcopy(trained_classifier)
+        val_loss_model.load_state_dict(torch.load('best_val_loss_model.pt'))
+        val_loss_model.to(device)
+        test_acc_val_loss, test_f1_val_loss, test_recall_val_loss, test_precision_val_loss = evaluate_model(
+            val_loss_model, test_loader, threshold=best_val_loss_threshold
+        )
+
+        # Evaluate the model with the best F1 score
+        print("\nEvaluating model with best F1 score:")
+        best_f1_model = copy.deepcopy(trained_classifier)
+        best_f1_model.load_state_dict(torch.load(best_f1_model_path))
+        best_f1_model.to(device)
+        test_acc_f1, test_f1_f1, test_recall_f1, test_precision_f1 = evaluate_model(
+            best_f1_model, test_loader, threshold=best_f1_threshold
+        )
 
         # 17. Close the TensorBoard writer
         writer.close()
@@ -587,20 +648,24 @@ if __name__ == "__main__":
         # Append the results
         results.append({
             **params,
-            'test_acc': test_acc,
-            'test_f1': test_f1,
-            'test_recall': test_recall,
-            'test_precision': test_precision
+            'test_acc_val_loss': test_acc_val_loss,
+            'test_f1_val_loss': test_f1_val_loss,
+            'test_recall_val_loss': test_recall_val_loss,
+            'test_precision_val_loss': test_precision_val_loss,
+            'test_acc_f1': test_acc_f1,
+            'test_f1_f1': test_f1_f1,
+            'test_recall_f1': test_recall_f1,
+            'test_precision_f1': test_precision_f1
         })
 
         # Save intermediate results
         results_df = pd.DataFrame(results)
         results_df.to_csv("classifier_parameter_tuning_results.csv", mode='a', header=not os.path.exists("classifier_parameter_tuning_results.csv"), index=False)
-        print("Results saved to parameter_tuning_results.csv")
+        print("Results saved to classifier_parameter_tuning_results.csv")
 
         # Update best model if current run has higher validation F1
-        if test_f1 > best_test_f1:
-            best_test_f1 = test_f1
+        if test_f1_f1 > best_test_f1:
+            best_test_f1 = test_f1_f1
             best_model_state = copy.deepcopy(trained_classifier.state_dict())
             best_params = params
 
