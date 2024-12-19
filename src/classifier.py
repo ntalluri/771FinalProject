@@ -15,7 +15,7 @@ import numpy as np
 import itertools
 import copy
 
-# seed Setting for Reproducibility
+# seed setting
 def set_seed(seed=42):
     random.seed(seed)
     np.random.seed(seed)
@@ -108,12 +108,12 @@ class BinaryClassifier(nn.Module):
             layers.append(nn.Linear(input_dim, hidden_unit))
             layers.append(nn.ReLU())
             input_dim = hidden_unit
-        layers.append(nn.Linear(input_dim, 1))  # Final output layer
+        layers.append(nn.Linear(input_dim, 1)) 
         self.classifier = nn.Sequential(*layers)
 
     def forward(self, x):
         # pass input through the encoder
-        encoded = self.encoder(x)  # Shape: (batch_size, num_rows, embed_dim)
+        encoded = self.encoder(x)  # shape: (batch_size, num_rows, embed_dim)
 
         # apply mean pooling over the sequence dimension to get (batch_size, embed_dim)
         pooled = encoded.mean(dim=1)
